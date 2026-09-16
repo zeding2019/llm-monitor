@@ -1,0 +1,11 @@
+# Signal Cartography
+
+A philosophy of making the invisible measurable — treating computational time as terrain to be surveyed, mapped, and rendered with the precision of a master cartographer. Every millisecond is a geological stratum. Every process boundary is a coastline. The work emerges from the conviction that raw performance data, when handled with painstaking care, possesses inherent visual beauty waiting to be revealed.
+
+Space is divided with the authority of scientific instrumentation. Dark fields of negative space carry the same weight as the data that breaks them — silence and signal given equal standing, meticulously balanced through countless refinements. Horizontal bands of color extend with the deliberateness of sediment layers, each edge crisp as a surveyor's line. The composition breathes through precisely calibrated margins, nothing placed carelessly, everything the product of deep expertise in visual rhythm.
+
+Color is a data channel, not decoration. A limited palette of luminous hues against near-black — each shade owning its own frequency of meaning, never competing, always clarifying. The chromatic choices are the result of painstaking calibration: jewel-toned bars that glow against the void, carrying information through hue and intensity. Translucency is used with surgical restraint, only where layering reveals rather than obscures.
+
+Typography is monospace and sparse — the visual language of instrumentation panels and oscilloscope readouts. Labels float near their data, anchored but not crowded. Numbers rendered in geometric mono fonts carry the authority of measurement. Headings in a contrasting grotesque create hierarchy through weight and scale, never through decoration. Every character earns its place through weeks of refinement that compress into an instantly legible moment.
+
+The whole aspires to the aesthetic of the scientific atlas — dense with information yet serene in its organization, the kind of document that rewards sustained attention with progressively deeper understanding. A work that looks as though it was labored over by someone at the absolute top of their field, every alignment the result of countless micro-adjustments, every color decision the outcome of systematic exploration. The observer should sense the hours, the expertise, the obsessive craft behind each apparently simple mark.
