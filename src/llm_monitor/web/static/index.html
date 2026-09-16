@@ -1,0 +1,2039 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>vllm-monitor</title>
+<style>
+  :root {
+    --bg: #f6f7fb;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --muted: #6b7280;
+    --text: #111827;
+    --accent: #2563eb;
+    --ok: #059669;
+    --err: #dc2626;
+    --tag-bg: #eef2ff;
+    --tag-fg: #4338ca;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Helvetica Neue", Arial, sans-serif;
+    color: var(--text); background: var(--bg); font-size: 13px;
+  }
+  header {
+    background: #0f172a; color: #fff; padding: 10px 20px;
+    display: flex; align-items: center; gap: 20px;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header .status { color: #94a3b8; font-size: 12px; }
+  nav a {
+    color: #94a3b8; margin-right: 14px; text-decoration: none; cursor: pointer;
+    padding: 4px 0; border-bottom: 2px solid transparent;
+  }
+  nav a.active { color: #fff; border-bottom-color: var(--accent); }
+  main { padding: 16px 20px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px;
+  }
+  .card h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .card .row { display: flex; justify-content: space-between; margin: 3px 0; }
+  .card .k { color: var(--muted); }
+  .card .v { font-variant-numeric: tabular-nums; }
+
+  .chart { width: 100%; height: 100%; display: block; }
+  .chart-title { font-size: 12px; color: var(--text); font-weight: 600; margin: 0 0 6px 0; }
+  .chart .grid-line { stroke: #f3f4f6; stroke-width: 1; }
+  .chart .axis { fill: #9ca3af; font-size: 10px; }
+  .chart .line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  .chart .area { fill: var(--accent); opacity: 0.08; }
+
+  /* ==== 可交互的曲线卡 ==== */
+  .chart-card {
+    padding: 10px 12px 8px 12px;
+    resize: both;                     /* 拖右下角改大小 */
+    overflow: hidden;
+    min-width: 320px;
+    min-height: 200px;
+    max-width: 100%;
+    max-height: 900px;
+    display: flex; flex-direction: column;
+  }
+  .chart-card .chart-wrap {
+    flex: 1; position: relative; min-height: 120px;
+    user-select: none; cursor: crosshair;
+    touch-action: none;
+  }
+  .chart-card .chart-wrap.dragging { cursor: grabbing; }
+  .chart-tooltip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: rgba(15, 23, 42, 0.95); color: #fff;
+    padding: 6px 10px; border-radius: 4px; font-size: 11px;
+    white-space: nowrap; transform: translate(-50%, calc(-100% - 10px));
+    opacity: 0; transition: opacity 0.08s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .chart-tooltip.on { opacity: 1; }
+  .chart-tooltip .tt-value { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .chart-tooltip .tt-time { color: #94a3b8; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .chart-crosshair {
+    position: absolute; pointer-events: none; z-index: 4;
+    width: 1px; background: rgba(37, 99, 235, 0.5); top: 0; bottom: 20px;
+    opacity: 0; transition: opacity 0.08s;
+  }
+  .chart-crosshair.on { opacity: 1; }
+  .chart-dot {
+    position: absolute; pointer-events: none; z-index: 4;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff;
+    box-shadow: 0 0 0 1px var(--accent);
+    transform: translate(-50%, -50%);
+    opacity: 0; transition: opacity 0.08s;
+  }
+  .chart-dot.on { opacity: 1; }
+  .chart-controls {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 6px; font-size: 10px; color: var(--muted);
+  }
+  .chart-controls .hint { flex: 1; }
+  .chart-controls button {
+    border: 1px solid var(--border); background: #fff;
+    color: var(--muted); font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; cursor: pointer; font-family: inherit;
+  }
+  .chart-controls button:hover { color: var(--text); background: #f9fafb; }
+
+  /* ==== 直方图 ==== */
+  .hist-card { padding: 12px; }
+  .hist-card .hist-title {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 8px;
+  }
+  .hist-card .hist-title .t-main { font-size: 12px; font-weight: 600; color: var(--text); }
+  .hist-card .hist-title .t-sub { color: var(--muted); font-size: 11px; }
+  .hist-svg { width: 100%; height: 160px; display: block; }
+  .hist-svg .bar { fill: var(--accent); opacity: 0.85; }
+  .hist-svg .bar:hover { opacity: 1; fill: #1d4ed8; }
+  .hist-svg .bar.warn { fill: #d97706; }
+  .hist-svg .bar.err { fill: var(--err); }
+  .hist-svg .axis { fill: #6b7280; font-size: 9px; }
+  .hist-svg .baseline { stroke: #e5e7eb; stroke-width: 1; }
+  .hist-svg .count-label { fill: #374151; font-size: 9px; font-variant-numeric: tabular-nums; }
+
+  /* ==== 时间范围选择器 ==== */
+  .range-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px; margin-bottom: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .range-bar .label {
+    color: var(--muted); font-size: 12px; margin-right: 6px;
+  }
+  .range-bar button {
+    border: 1px solid var(--border); background: #fff;
+    color: var(--text); font-size: 12px; padding: 4px 10px;
+    border-radius: 4px; cursor: pointer; font-family: inherit;
+    font-variant-numeric: tabular-nums;
+  }
+  .range-bar button:hover { background: #f9fafb; }
+  .range-bar button.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .range-bar .spacer { flex: 1; }
+  .range-bar .stats { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #f0f1f4; font-size: 12px; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.err td { background: #fef2f2; }
+  .gpu-name-sub { display: block; color: var(--muted); font-size: 11px; margin-top: 1px; }
+  td.v-warn { color: #b45309; font-weight: 600; }
+  td.v-err { color: #dc2626; font-weight: 700; }
+  td.v-ok { color: #16a34a; font-weight: 600; }
+  .link { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .link:hover { text-decoration: underline; }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--tag-bg); color: var(--tag-fg); }
+  .pill { padding: 1px 6px; border-radius: 10px; font-size: 11px; }
+  .pill.ok { background: #ecfdf5; color: var(--ok); }
+  .pill.err { background: #fef2f2; color: var(--err); }
+
+  /* 详情侧栏 */
+  #detail {
+    position: fixed; right: 0; top: 0; bottom: 0; width: 55%;
+    background: var(--panel); border-left: 1px solid var(--border);
+    box-shadow: -6px 0 18px rgba(0,0,0,0.08); padding: 16px 20px;
+    overflow: auto; transform: translateX(100%); transition: transform 0.15s ease-out;
+  }
+  #detail.on { transform: translateX(0); }
+  #detail .close {
+    float: right; cursor: pointer; color: #9ca3af; font-size: 18px;
+    padding: 2px 8px; border-radius: 4px;
+  }
+  #detail .close:hover { background: #f3f4f6; color: var(--text); }
+  #detail h3 { margin: 4px 0 4px 0; font-size: 15px; }
+  #detail .meta { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+
+  /* 消息树 timeline (甘特图) */
+  .timeline { margin: 12px 0; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .tl-row { display: grid; grid-template-columns: 260px 1fr 60px; align-items: center; height: 22px; }
+  .tl-row:hover { background: #f9fafb; }
+  .tl-label { padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-bar-wrap { position: relative; height: 14px; background: #f3f4f6; border-radius: 2px; margin: 0 8px; }
+  .tl-bar { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 2px; }
+  .tl-bar.err { background: var(--err); }
+  .tl-dur { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; padding-right: 4px; }
+
+  pre { background: #f9fafb; padding: 10px; border-radius: 6px; font-size: 11px; max-height: 220px; overflow: auto; }
+
+  /* ==== 分区标题 ==== */
+  .section-title {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin: 18px 0 8px 0; display: flex; align-items: center; gap: 8px;
+  }
+  .section-title:first-child { margin-top: 4px; }
+  .section-title::before {
+    content: ""; display: inline-block; width: 3px; height: 12px;
+    background: var(--accent); border-radius: 2px;
+  }
+  .section-title .hint { color: #cbd5e1; font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .tbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; flex-wrap: wrap; }
+  .tbar .ttl { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 8px; }
+  .tbar .ttl::before { content: ""; width: 3px; height: 12px; background: var(--accent); border-radius: 2px; }
+  .tbar .ttl .hint { color: #cbd5e1; font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .tbar .sp { flex: 1; }
+  .rlog { color: var(--muted); font-size: 11px; }
+  .rbtn { border: 1px solid var(--border); background: #fff; color: #374151; font-size: 11px; padding: 2px 12px; border-radius: 5px; cursor: pointer; font-family: inherit; }
+  .rbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .rbtn:active { transform: translateY(1px); }
+
+  /* ==== 大数字 KPI 卡 ==== */
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px;
+  }
+  .kpi .kpi-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .kpi .kpi-value {
+    font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text); line-height: 1.2; margin-top: 2px;
+  }
+  .kpi .kpi-value.warn { color: #d97706; }
+  .kpi .kpi-value.err { color: var(--err); }
+  .kpi .kpi-sub { color: var(--muted); font-size: 11px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  /* ==== GPU 卡:横排小指标条 ==== */
+  .gpu-card { padding: 12px 14px; }
+  .gpu-card .gpu-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .gpu-card .gpu-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .gpu-card .gpu-name { color: var(--muted); font-size: 11px; }
+  .gpu-metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px 12px;
+  }
+  .gpu-metrics .m-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .gpu-metrics .m-value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .gpu-metrics .m-bar {
+    height: 4px; background: #f3f4f6; border-radius: 2px; margin-top: 3px; overflow: hidden;
+  }
+  .gpu-metrics .m-bar > div {
+    height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s ease;
+  }
+  .gpu-metrics .m-bar.warn > div { background: #d97706; }
+  .gpu-metrics .m-bar.err > div { background: var(--err); }
+
+  /* ==== 多线时序图(GPU 对比) ==== */
+  .multi-chart { padding: 12px; display: flex; flex-direction: column; min-height: 280px; }
+  .multi-chart .mc-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .multi-chart .mc-head .chart-title { margin: 0; }
+  .multi-chart .mc-unit { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .multi-chart .mc-legend {
+    display: flex; flex-wrap: wrap; gap: 3px 12px; font-size: 11px;
+    color: var(--muted); margin: 2px 0 6px 0;
+  }
+  .multi-chart .mc-item {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-variant-numeric: tabular-nums; cursor: pointer;
+    user-select: none;
+  }
+  .multi-chart .mc-item.off { opacity: 0.35; }
+  .multi-chart .mc-swatch {
+    display: inline-block; width: 10px; height: 3px; border-radius: 1px;
+  }
+  .multi-chart .mc-val { color: var(--text); font-weight: 500; }
+  .multi-chart .mc-wrap {
+    flex: 1; position: relative; min-height: 180px;
+    cursor: crosshair;
+  }
+  .multi-chart .mc-tooltip {
+    position: absolute; pointer-events: none; z-index: 6;
+    background: rgba(15, 23, 42, 0.96); color: #fff;
+    padding: 6px 10px; border-radius: 4px; font-size: 11px;
+    min-width: 150px; max-width: 220px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    opacity: 0; transition: opacity 0.08s;
+  }
+  .multi-chart .mc-tooltip.on { opacity: 1; }
+  .multi-chart .mc-tooltip .tt-time {
+    color: #94a3b8; margin-bottom: 4px; font-variant-numeric: tabular-nums;
+    border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 3px;
+  }
+  .multi-chart .mc-tooltip .tt-line {
+    display: flex; align-items: center; gap: 6px; padding: 1px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .multi-chart .mc-tooltip .tt-sw {
+    display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .multi-chart .mc-tooltip .tt-v { margin-left: auto; font-weight: 600; }
+
+  /* ==== Bootstrap 风格轻量美化(纯视觉,不动布局) ==== */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  header {
+    background: linear-gradient(90deg, #0f172a, #1e293b);
+    box-shadow: 0 1px 8px rgba(15, 23, 42, .18);
+  }
+  nav a:hover { color: #e2e8f0; }
+  main { padding-bottom: 48px; }
+  .card { box-shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 2px 10px rgba(15, 23, 42, .04); }
+  th { background: #f8fafc; }
+  tbody tr:hover td { background: #f8fafc; }
+  .section-title { color: #475569; }
+  .rbtn {
+    border-radius: 6px; cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .rbtn:hover { background: #eff6ff; }
+  input, select { border-radius: 6px; transition: border-color .12s, box-shadow .12s; }
+  input:focus, select:focus { outline: none; border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+  .tag { border-radius: 5px; }
+  .pill { border-radius: 999px; }
+
+  /* ==== 卡片布局引擎(拖/缩放/持久化)==== */
+  .hbtn {
+    background: #1e293b; color: #cbd5e1; border: 1px solid #334155;
+    border-radius: 6px; font-size: 12px; padding: 4px 12px; cursor: pointer; font-family: inherit;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .hbtn:hover { color: #fff; border-color: #475569; }
+  .hbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .header-side { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .chart-card { resize: none; }   /* 由布局引擎统一处理缩放(避免和每 tick 布局冲突) */
+  #charts, #gpu-multi-grid { display: block !important; position: relative; min-height: 60px; }
+  #charts > .card, #gpu-multi-grid > .multi-chart { position: absolute; margin: 0; }
+  .dash-grab, .dash-se { display: none; }
+  body.dash-editing .dash-grab, body.dash-editing .dash-se { display: block; }
+  body.dash-editing #charts > .card, body.dash-editing #gpu-multi-grid > .multi-chart {
+    box-shadow: 0 0 0 1.5px #93c5fd, 0 1px 2px rgba(15,23,42,.05);
+    user-select: none;
+  }
+  body.dash-editing #charts > .card:hover, body.dash-editing #gpu-multi-grid > .multi-chart:hover {
+    box-shadow: 0 0 0 2px #3b82f6;
+  }
+  .dash-grab {
+    position: absolute; left: 0; top: 0; right: 0; height: 16px;
+    cursor: move; z-index: 5; touch-action: none; border-radius: 10px 10px 0 0;
+  }
+  .dash-se {
+    position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px;
+    cursor: nwse-resize; z-index: 6; touch-action: none; opacity: .8;
+    background:
+      linear-gradient(135deg, transparent 0 45%, #3b82f6 46% 56%, transparent 57%),
+      linear-gradient(135deg, transparent 0 25%, #93c5fd 26% 36%, transparent 37%);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>vllm-monitor</h1>
+  <nav>
+    <a class="active" data-tab="overview">概览</a>
+    <a data-tab="tx">请求追踪</a>
+    <a data-tab="ev">事件</a>
+    <a data-tab="me">指标</a>
+    <a data-tab="rep">报告</a>
+  </nav>
+  <div class="status" id="status">…</div>
+  <div class="header-side">
+    <span style="color:#94a3b8;font-size:12px">刷新</span>
+    <select id="refresh-rate" title="页面自动刷新间隔"
+      style="background:#1e293b;color:#cbd5e1;border:1px solid #334155;border-radius:6px;font-size:12px;padding:3px 4px;font-family:inherit">
+      <option value="2000">2s</option>
+      <option value="5000">5s</option>
+      <option value="8000" selected>8s</option>
+      <option value="15000">15s</option>
+      <option value="30000">30s</option>
+      <option value="0">手动</option>
+    </select>
+    <button class="hbtn" id="dash-edit-btn" onclick="dashToggleEdit()">✥ 编辑布局</button>
+    <button class="hbtn" id="dash-reset-btn" onclick="dashReset()" style="display:none">重置布局</button>
+  </div>
+</header>
+
+<main>
+  <section id="overview">
+    <div class="range-bar" id="range-bar">
+      <span class="label">时间范围</span>
+      <button data-range="60">1 分钟</button>
+      <button data-range="300" class="active">5 分钟</button>
+      <button data-range="900">15 分钟</button>
+      <button data-range="1800">30 分钟</button>
+      <button data-range="3600">1 小时</button>
+      <button data-range="10800">3 小时</button>
+      <button data-range="21600">6 小时</button>
+      <span style="width:1px;height:16px;background:var(--border);margin:0 4px"></span>
+      <span class="label">自定义</span>
+      <input type="number" id="custom-range-value" min="1" max="1440" value="10" style="width:60px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:inherit;font-variant-numeric:tabular-nums">
+      <select id="custom-range-unit" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-family:inherit;background:#fff">
+        <option value="60">分钟</option>
+        <option value="1">秒</option>
+        <option value="3600">小时</option>
+      </select>
+      <button id="apply-custom-range">应用</button>
+      <span class="spacer"></span>
+      <span class="stats" id="range-stats">--</span>
+    </div>
+
+    <div class="section-title">GPU 硬件 <span class="hint">每行一张卡:利用率 / 显存 / 温度 / 功耗 / H2D-D2H</span></div>
+    <table>
+      <thead><tr>
+        <th>GPU</th><th style="text-align:right">利用率</th><th style="text-align:right">显存</th>
+        <th style="text-align:right">温度</th><th style="text-align:right">功耗</th><th style="text-align:right">显存带宽</th>
+        <th style="text-align:right">H2D ↑</th><th style="text-align:right">D2H ↓</th>
+        <th style="text-align:right">PCIe 利用率</th><th style="text-align:right">链接</th>
+      </tr></thead>
+      <tbody id="gpu-tbody"></tbody>
+    </table>
+
+    <div class="section-title">GPU 时序对比 <span class="hint">8 张卡叠在同一坐标 · 点击图例可临时隐藏</span></div>
+    <div class="grid" id="gpu-multi-grid" style="grid-template-columns: repeat(auto-fit, minmax(480px, 1fr))"></div>
+
+    <div class="section-title">主机资源 <span class="hint">CPU / 内存 / 网络吞吐</span></div>
+    <div class="kpi-grid" id="kpi-host"></div>
+
+    <div class="section-title">vLLM 状态 <span class="hint">KV cache 命中率 / 显存占用</span></div>
+    <div class="kpi-grid" id="kpi-vllm"></div>
+
+    <div class="section-title">启动阶段 <span class="hint">本次启动耗时分解 · SGLang/vLLM 统一阶段</span></div>
+    <table>
+      <thead><tr><th>引擎</th><th>阶段</th><th style="text-align:right">耗时</th><th>进程数</th></tr></thead>
+      <tbody id="startup-tbody"></tbody>
+    </table>
+
+    <div class="section-title">时序曲线 <span class="hint">拖动=平移 · 滚轮=缩放 · 双击=重置</span></div>
+    <div class="grid" id="charts"></div>
+  </section>
+
+  <section id="tx" style="display:none">
+    <div class="tbar">
+      <span class="ttl">请求追踪 <span class="hint">生命周期 · 点 rid 看调用栈</span></span>
+      <span class="sp"></span>
+      <span class="rlog" id="kv-stat" style="margin-right:10px">KV 命中率 --</span>
+      <span class="rlog" id="rlog-tx"></span>
+      <button class="rbtn" onclick="manualRefresh('tx')">刷新</button>
+    </div>
+    <div class="tbar" style="margin-top:0">
+      <input id="trace-q-rid" placeholder="按 rid 查询…" value=""
+        style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 8px;width:220px;font-family:inherit">
+      <select id="trace-q-since" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 4px;font-family:inherit">
+        <option value="300">最近 5 分钟</option>
+        <option value="900">最近 15 分钟</option>
+        <option value="3600" selected>最近 1 小时</option>
+        <option value="14400">最近 4 小时</option>
+        <option value="86400">最近 24 小时</option>
+        <option value="0">全部时间</option>
+      </select>
+      <span class="sp"></span>
+      每页
+      <select id="trace-page-size" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 4px;font-family:inherit">
+        <option>10</option><option selected>20</option><option>50</option><option>100</option>
+      </select>
+      <span class="rlog" id="trace-info" style="margin-left:6px">--</span>
+      <button class="rbtn" id="trace-prev" onclick="traceGo(-1)">‹ 上一页</button>
+      <button class="rbtn" id="trace-next" onclick="traceGo(1)">下一页 ›</button>
+    </div>
+    <table>
+      <thead><tr><th>到达时间</th><th>请求 rid</th><th>TTFT</th><th>TPOT</th><th>输出 tokens</th><th>端到端</th><th>状态</th><th>PID</th></tr></thead>
+      <tbody id="trace-tbody"></tbody>
+    </table>
+    <div class="tbar" style="margin-top:18px">
+      <span class="ttl">引擎事务 <span class="hint">Scheduler 逐 batch 执行明细(prefill / decode)</span></span>
+    </div>
+    <div class="tbar" style="margin-top:0">
+      <input id="sst-pid" placeholder="按 PID 过滤…" value=""
+        style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 8px;width:120px;font-family:inherit">
+      <select id="sst-since" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 4px;font-family:inherit">
+        <option value="60">最近 1 分钟</option>
+        <option value="300">最近 5 分钟</option>
+        <option value="900">最近 15 分钟</option>
+        <option value="3600" selected>最近 1 小时</option>
+        <option value="14400">最近 4 小时</option>
+        <option value="86400">最近 24 小时</option>
+        <option value="0">全部时间</option>
+      </select>
+      <span class="sp"></span>
+      每页
+      <select id="sst-size" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 4px;font-family:inherit">
+        <option>50</option><option selected>100</option><option>200</option><option>500</option>
+      </select>
+      <span class="rlog" id="sst-info" style="margin-left:6px">--</span>
+      <button class="rbtn" id="sst-prev" onclick="sstGo(-1)">‹ 上一页</button>
+      <button class="rbtn" id="sst-next" onclick="sstGo(1)">下一页 ›</button>
+    </div>
+    <table>
+      <thead><tr><th>时间</th><th>PID</th><th>模式</th><th>批请求数</th><th>batch tokens</th><th>耗时</th></tr></thead>
+      <tbody id="tx-tbody"></tbody>
+    </table>
+  </section>
+
+  <section id="ev" style="display:none">
+    <div class="tbar">
+      <span class="ttl">事件 <span class="hint">一次性事件,只计数</span></span>
+      <span class="sp"></span>
+      <span class="rlog" id="rlog-ev"></span>
+      <button class="rbtn" onclick="manualRefresh('ev')">刷新</button>
+    </div>
+    <table>
+      <thead><tr><th>时间</th><th>类型</th><th>名称</th><th>状态</th><th>数据</th></tr></thead>
+      <tbody id="ev-tbody"></tbody>
+    </table>
+  </section>
+
+  <section id="me" style="display:none">
+    <div class="tbar">
+      <span class="ttl">指标 <span class="hint">业务指标计数 / 汇总</span></span>
+      <span class="sp"></span>
+      <span class="rlog" id="rlog-me"></span>
+      <button class="rbtn" onclick="manualRefresh('me')">刷新</button>
+    </div>
+    <table>
+      <thead><tr><th>时间</th><th>名称</th><th>次数</th><th>总和</th><th>标签</th></tr></thead>
+      <tbody id="me-tbody"></tbody>
+    </table>
+  </section>
+
+  <section id="rep" style="display:none">
+    <div class="tbar">
+      <span class="ttl">时间段报告 <span class="hint">对 request_trace 聚合:QPS / 吞吐 / TTFT·TPOT·E2E 分布</span></span>
+      <span class="sp"></span>
+      <span class="rlog" id="rlog-rep"></span>
+      <button class="rbtn" onclick="refreshReport()">生成报告</button>
+    </div>
+    <div class="tbar" style="margin-top:0">
+      <button class="rbtn" onclick="reportPreset(5)">最近5分钟</button>
+      <button class="rbtn" onclick="reportPreset(15)">最近15分钟</button>
+      <button class="rbtn" onclick="reportPreset(60)">最近1小时</button>
+      <button class="rbtn" onclick="reportPreset(360)">最近6小时</button>
+      <span style="margin:0 8px;color:var(--muted)">或</span>
+      <input type="datetime-local" id="rep-start" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:2px 6px">
+      <span style="color:var(--muted)">~</span>
+      <input type="datetime-local" id="rep-end" style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:2px 6px">
+      <button class="rbtn" onclick="reportCustom()">查询</button>
+      <span style="margin:0 0 0 10px;color:var(--muted)">统计口径</span>
+      <select id="rep-by" title="按 rid 的开始/结束时间过滤"
+        style="border:1px solid var(--border);border-radius:5px;font-size:12px;padding:3px 4px;font-family:inherit">
+        <option value="any" selected>与窗口有交集</option>
+        <option value="start">按 rid 开始时间在窗口内</option>
+        <option value="finish">按 rid 结束时间在窗口内</option>
+        <option value="both">开始与结束都在窗口内</option>
+      </select>
+    </div>
+    <div id="rep-body" style="color:var(--muted);font-size:12px;padding:10px 0">点上方按钮生成报告。</div>
+  </section>
+</main>
+
+<div id="detail">
+  <span class="close" onclick="closeDetail()">✕</span>
+  <div id="detail-body"></div>
+</div>
+
+<script>
+// ==================== 工具 ====================
+const $ = (id) => document.getElementById(id);
+const fmtMs = (ns) => (ns / 1e6).toFixed(2) + ' ms';
+const fmtTime = (ns) => {
+  const d = new Date(ns / 1e6);
+  return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+};
+const fmt2 = (v) => (+v).toFixed(2);
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+// ==================== 时间范围 ====================
+let _rangeSec = 300;  // 默认 5 分钟
+
+function _setupRangeBar() {
+  const bar = $('range-bar');
+  if (!bar || bar._bound) return;
+  bar._bound = true;
+
+  const applyRange = (sec, activeBtn) => {
+    _rangeSec = sec;
+    bar.querySelectorAll('button[data-range]').forEach(b => b.classList.remove('active'));
+    if (activeBtn) activeBtn.classList.add('active');
+    // 切换时清一次曲线的自动跟随状态,让新范围生效
+    document.querySelectorAll('.chart-card').forEach(c => {
+      if (c._chartState) {
+        c._chartState.followTail = true;
+        c._chartState.viewStart = 0;
+        c._chartState.viewEnd = -1;
+      }
+    });
+    tick();
+  };
+
+  bar.querySelectorAll('button[data-range]').forEach(btn => {
+    btn.onclick = () => applyRange(parseInt(btn.dataset.range, 10), btn);
+  });
+
+  const applyCustom = () => {
+    const val = parseInt($('custom-range-value').value, 10);
+    const unit = parseInt($('custom-range-unit').value, 10);
+    if (!val || val <= 0) return;
+    const sec = Math.max(10, Math.min(86400, val * unit));
+    applyRange(sec, null);
+  };
+  $('apply-custom-range').onclick = applyCustom;
+  $('custom-range-value').addEventListener('keydown', e => {
+    if (e.key === 'Enter') applyCustom();
+  });
+}
+
+// ==================== Tab 切换 ====================
+document.querySelectorAll('nav a').forEach(a => {
+  a.onclick = () => {
+    document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    ['overview', 'tx', 'ev', 'me', 'rep'].forEach(id => {
+      $(id).style.display = id === a.dataset.tab ? '' : 'none';
+    });
+    if (a.dataset.tab === 'rep') refreshReport();  // 进入报告 tab 即自动生成
+  };
+});
+
+// ==================== 概览:分区布局(增量更新) ====================
+const _setIfChanged = (el, html) => {
+  if (el._lastHtml !== html) { el.innerHTML = html; el._lastHtml = html; }
+};
+const _setText = (el, txt) => { if (el && el.textContent !== txt) el.textContent = txt; };
+const _setAttr = (el, k, v) => { if (el && el.getAttribute(k) !== v) el.setAttribute(k, v); };
+
+// -------- KPI (大数字卡片) --------
+
+function _kpi(id, label, sub = '') {
+  return `<div class="kpi" data-id="${id}">
+    <div class="kpi-label">${label}</div>
+    <div class="kpi-value" data-role="value">--</div>
+    <div class="kpi-sub" data-role="sub">${sub}</div>
+  </div>`;
+}
+function _ensureKpiGrid(container, spec) {
+  // spec: [{id, label}]
+  if (container._built) return;
+  container.innerHTML = spec.map(s => _kpi(s.id, s.label)).join('');
+  container._built = true;
+}
+function _updateKpi(container, id, value, sub = '', level = '') {
+  const card = container.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const vNode = card.querySelector('[data-role="value"]');
+  const sNode = card.querySelector('[data-role="sub"]');
+  _setText(vNode, value);
+  _setText(sNode, sub);
+  const want = level ? `kpi-value ${level}` : 'kpi-value';
+  if (vNode.className !== want) vNode.className = want;
+}
+
+// -------- GPU 硬件表(每行一张卡)--------
+
+function _gpuCls(pct, warn, err) {
+  if (pct >= err) return 'v-err';
+  if (pct >= warn) return 'v-warn';
+  if (pct > 1) return 'v-ok';
+  return '';
+}
+function _pctLevel(pct, warn, err) {
+  if (pct >= err) return 'err';
+  if (pct >= warn) return 'warn';
+  return '';
+}
+
+function _renderGpuTable(tbody, gpuSources, latestOf) {
+  const rows = gpuSources
+    .map(src => { const latest = latestOf(src); return latest ? { src, latest } : null; })
+    .filter(Boolean)
+    .sort((a, b) => ((+a.src.split(':')[2] || 0) - (+b.src.split(':')[2] || 0)));  // GPU 0..7 稳定排序
+  if (!rows.length) {
+    _setIfChanged(tbody, '<tr><td colspan="10" style="color:var(--muted)">未检测到 GPU / 采集器未就绪</td></tr>');
+    return;
+  }
+  let html = '';
+  for (const { src, latest: v } of rows) {
+    const [, vendor, idx] = src.split(':');
+    const util = +v.util_pct || 0;
+    const vramUsed = +v.vram_used_mb || 0;
+    const vramTotal = +v.vram_total_mb || 0;
+    const vramPct = vramTotal > 0 ? (vramUsed / vramTotal * 100) : (+v.mem_used_pct || 0);
+    const temp = +v.temperature_c || 0;
+    const power = +v.power_w || 0;
+    const memBw = +v.mem_bw_util_pct || 0;
+    const pcieUtil = +v.pcie_util_pct || 0;
+    const pcieTx = +v.pcie_tx_mbps || 0;
+    const pcieRx = +v.pcie_rx_mbps || 0;
+    const pcieUsed = +v.pcie_used_mbps || 0;   // 合并总带宽(某些工具只给这一个)
+    const pcieGen = +v.pcie_link_gen || 0;
+    const pcieWidth = +v.pcie_link_width || 0;
+    // 方向带宽优先;只有合并值时放 H2D 并标 (总)
+    let txTxt, rxTxt;
+    if (pcieTx > 0 || pcieRx > 0) { txTxt = _fmtBps(pcieTx); rxTxt = _fmtBps(pcieRx); }
+    else if (pcieUsed > 0) { txTxt = _fmtBps(pcieUsed) + ' (总)'; rxTxt = '—'; }
+    else { txTxt = '--'; rxTxt = '--'; }
+    const vramAbs = vramTotal > 0 ? `${vramUsed.toFixed(0)}/${vramTotal.toFixed(0)}MB` : '';
+    const linkTxt = (pcieGen && pcieWidth) ? `Gen${pcieGen.toFixed(0)}×${pcieWidth.toFixed(0)}` : '—';
+    html += `<tr>
+      <td><strong>${vendor.toUpperCase()} GPU ${idx}</strong></td>
+      <td class="num ${_gpuCls(util, 80, 95)}">${util.toFixed(1)}%</td>
+      <td class="num ${_gpuCls(vramPct, 85, 95)}">${vramPct.toFixed(1)}%<span class="gpu-name-sub">${vramAbs}</span></td>
+      <td class="num">${temp > 0 ? temp.toFixed(0) + ' °C' : '--'}</td>
+      <td class="num">${power > 0 ? power.toFixed(0) + ' W' : '--'}</td>
+      <td class="num">${memBw > 0 ? memBw.toFixed(1) + '%' : '--'}</td>
+      <td class="num">${txTxt}</td>
+      <td class="num">${rxTxt}</td>
+      <td class="num ${_gpuCls(pcieUtil, 60, 85)}">${pcieUtil > 0 ? pcieUtil.toFixed(1) + '%' : '--'}</td>
+      <td class="num">${linkTxt}</td>
+    </tr>`;
+  }
+  _setIfChanged(tbody, html);
+}
+
+function _fmtBps(mbps) {
+  if (!mbps || mbps < 0.01) return '--';
+  if (mbps < 1) return (mbps * 1024).toFixed(0) + ' KB/s';
+  if (mbps < 1024) return mbps.toFixed(1) + ' MB/s';
+  return (mbps / 1024).toFixed(2) + ' GB/s';
+}
+
+// -------- 时序曲线 --------
+
+// -------- 交互式时序曲线:hover / drag / wheel-zoom / resize --------
+
+function _buildChartCard(id, title) {
+  return `<div class="card chart-card" data-id="${id}">
+    <div class="chart-title" data-role="title">${title}</div>
+    <div class="chart-wrap" data-role="wrap">
+      <svg class="chart" preserveAspectRatio="none" data-role="svg">
+        <line class="grid-line" data-role="g1"/>
+        <line class="grid-line" data-role="g2"/>
+        <line class="grid-line" data-role="g3"/>
+        <path class="area" data-role="area" d=""/>
+        <path class="line" data-role="line" d=""/>
+        <text class="axis" data-role="y-max" text-anchor="end"></text>
+        <text class="axis" data-role="y-mid" text-anchor="end"></text>
+        <text class="axis" data-role="y-min" text-anchor="end"></text>
+        <text class="axis" data-role="x-first" text-anchor="start"></text>
+        <text class="axis" data-role="x-mid" text-anchor="middle"></text>
+        <text class="axis" data-role="x-last" text-anchor="end"></text>
+      </svg>
+      <div class="chart-crosshair" data-role="crosshair"></div>
+      <div class="chart-dot" data-role="dot"></div>
+      <div class="chart-tooltip" data-role="tooltip">
+        <div class="tt-value" data-role="tt-value">--</div>
+        <div class="tt-time" data-role="tt-time">--</div>
+      </div>
+    </div>
+    <div class="chart-controls">
+      <span class="hint">拖动=平移 · 滚轮=缩放 · 双击=重置</span>
+      <button data-role="reset">重置</button>
+    </div>
+  </div>`;
+}
+
+function _installChartInteractions(card) {
+  const state = card._chartState = {
+    series: [], ts: [],
+    viewStart: 0, viewEnd: -1,        // -1 表示自动跟随最新
+    PAD_L: 36, PAD_R: 8, PAD_T: 8, PAD_B: 18,
+    followTail: true,                  // 未交互过时,新数据自动滚动到最新
+  };
+  const wrap = card.querySelector('[data-role="wrap"]');
+
+  new ResizeObserver(() => _redrawChart(card)).observe(wrap);
+
+  wrap.addEventListener('mousemove', e => {
+    if (drag.active) return;
+    const rect = wrap.getBoundingClientRect();
+    _showTooltip(card, e.clientX - rect.left);
+  });
+  wrap.addEventListener('mouseleave', () => _hideTooltip(card));
+
+  // 拖动 = 平移
+  const drag = { active: false };
+  wrap.addEventListener('mousedown', e => {
+    if (state.series.length < 2) return;
+    drag.active = true;
+    drag.startX = e.clientX;
+    drag.startViewStart = state.viewStart;
+    drag.startViewEnd = _effectiveViewEnd(state);
+    wrap.classList.add('dragging');
+    _hideTooltip(card);
+    e.preventDefault();
+  });
+  const onMove = e => {
+    if (!drag.active) return;
+    const rect = wrap.getBoundingClientRect();
+    const view = drag.startViewEnd - drag.startViewStart;
+    const dx = e.clientX - drag.startX;
+    const shift = -Math.round(dx / (rect.width - state.PAD_L - state.PAD_R) * view);
+    let ns = drag.startViewStart + shift;
+    let ne = drag.startViewEnd + shift;
+    if (ns < 0) { ne -= ns; ns = 0; }
+    if (ne > state.series.length - 1) {
+      const d = ne - (state.series.length - 1);
+      ns -= d; ne -= d;
+    }
+    if (ns < 0) ns = 0;
+    state.viewStart = ns;
+    state.viewEnd = ne;
+    state.followTail = false;
+    _redrawChart(card);
+  };
+  const onUp = () => {
+    if (!drag.active) return;
+    drag.active = false;
+    wrap.classList.remove('dragging');
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+
+  // 滚轮 = 缩放
+  wrap.addEventListener('wheel', e => {
+    if (state.series.length < 4) return;
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const innerW = rect.width - state.PAD_L - state.PAD_R;
+    const rel = Math.max(0, Math.min(1, (e.clientX - rect.left - state.PAD_L) / innerW));
+    const vs = state.viewStart;
+    const ve = _effectiveViewEnd(state);
+    const view = ve - vs;
+    const zoom = e.deltaY > 0 ? 1.3 : 0.75;
+    let newView = Math.round(view * zoom);
+    newView = Math.max(3, Math.min(state.series.length - 1, newView));
+    const cursor = vs + rel * view;
+    let ns = Math.round(cursor - rel * newView);
+    let ne = ns + newView;
+    if (ns < 0) { ns = 0; ne = newView; }
+    if (ne > state.series.length - 1) {
+      ne = state.series.length - 1;
+      ns = Math.max(0, ne - newView);
+    }
+    state.viewStart = ns;
+    state.viewEnd = ne;
+    state.followTail = (ne === state.series.length - 1);
+    _redrawChart(card);
+    // 缩放时提示当前位置
+    _showTooltip(card, e.clientX - rect.left);
+  }, { passive: false });
+
+  wrap.addEventListener('dblclick', () => _resetView(card));
+  card.querySelector('[data-role="reset"]').onclick = () => _resetView(card);
+}
+
+function _effectiveViewEnd(s) {
+  return s.followTail ? s.series.length - 1 : s.viewEnd;
+}
+
+function _resetView(card) {
+  const s = card._chartState;
+  s.viewStart = 0;
+  s.viewEnd = s.series.length - 1;
+  s.followTail = true;
+  _redrawChart(card);
+}
+
+function _updateChart(card, series, ts) {
+  if (!card._chartState) _installChartInteractions(card);
+  const s = card._chartState;
+  s.series = series;
+  s.ts = ts;
+  if (s.followTail || s.viewEnd < 0) {
+    s.viewStart = 0;
+    s.viewEnd = series.length - 1;
+  } else {
+    // 用户已经缩放/平移过,保持视窗范围但夹紧到实际数据范围
+    if (s.viewEnd > series.length - 1) s.viewEnd = series.length - 1;
+    if (s.viewStart < 0) s.viewStart = 0;
+    if (s.viewStart >= s.viewEnd) { s.viewStart = 0; s.viewEnd = series.length - 1; s.followTail = true; }
+  }
+  _redrawChart(card);
+}
+
+function _redrawChart(card) {
+  const s = card._chartState;
+  if (!s || !s.series.length) return;
+  const wrap = card.querySelector('[data-role="wrap"]');
+  const svg = card.querySelector('svg.chart');
+  const rect = wrap.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if (W < 20 || H < 20) return;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const view = s.series.slice(s.viewStart, s.viewEnd + 1);
+  const viewTs = s.ts.slice(s.viewStart, s.viewEnd + 1);
+  if (view.length < 2) return;
+
+  const min = Math.min(...view), max = Math.max(...view);
+  const range = (max - min) || 1;
+  const { PAD_L, PAD_R, PAD_T, PAD_B } = s;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+  const x = i => PAD_L + (i / Math.max(view.length - 1, 1)) * innerW;
+  const y = v => PAD_T + innerH - ((v - min) / range) * innerH;
+
+  const pathD = view.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const areaD = pathD +
+    ` L${x(view.length - 1).toFixed(1)},${(PAD_T + innerH).toFixed(1)}` +
+    ` L${x(0).toFixed(1)},${(PAD_T + innerH).toFixed(1)} Z`;
+
+  _setAttr(card.querySelector('[data-role="line"]'), 'd', pathD);
+  _setAttr(card.querySelector('[data-role="area"]'), 'd', areaD);
+
+  const setGrid = (sel, yv) => {
+    const el = card.querySelector(sel);
+    _setAttr(el, 'x1', PAD_L); _setAttr(el, 'x2', W - PAD_R);
+    _setAttr(el, 'y1', yv);    _setAttr(el, 'y2', yv);
+  };
+  setGrid('[data-role="g1"]', PAD_T);
+  setGrid('[data-role="g2"]', PAD_T + innerH / 2);
+  setGrid('[data-role="g3"]', PAD_T + innerH);
+
+  const setLabel = (sel, tx, ty, text) => {
+    const el = card.querySelector(sel);
+    _setAttr(el, 'x', tx); _setAttr(el, 'y', ty);
+    _setText(el, text);
+  };
+  setLabel('[data-role="y-max"]',   PAD_L - 4, PAD_T + 4,               fmt2(max));
+  setLabel('[data-role="y-mid"]',   PAD_L - 4, PAD_T + innerH / 2 + 3,  fmt2((max + min) / 2));
+  setLabel('[data-role="y-min"]',   PAD_L - 4, PAD_T + innerH,          fmt2(min));
+  setLabel('[data-role="x-first"]', PAD_L,     H - 4,  _fmtTimeShort(viewTs[0]));
+  setLabel('[data-role="x-mid"]',   W / 2,     H - 4,  _fmtTimeShort(viewTs[Math.floor(viewTs.length / 2)]));
+  setLabel('[data-role="x-last"]',  W - PAD_R, H - 4,  _fmtTimeShort(viewTs[viewTs.length - 1]));
+
+  // 记住 mapping 供 tooltip 用
+  s._map = { view, viewTs, x, y, innerW, PAD_L, PAD_R, H };
+}
+
+function _showTooltip(card, mouseX) {
+  const s = card._chartState;
+  if (!s || !s._map || !s._map.view.length) return;
+  const { view, viewTs, x, y, PAD_L, PAD_R } = s._map;
+  const wrap = card.querySelector('[data-role="wrap"]');
+  const rect = wrap.getBoundingClientRect();
+  const W = rect.width;
+  if (mouseX < PAD_L - 2 || mouseX > W - PAD_R + 2) { _hideTooltip(card); return; }
+  const innerW = W - PAD_L - PAD_R;
+  const rel = Math.max(0, Math.min(1, (mouseX - PAD_L) / innerW));
+  const idx = Math.round(rel * (view.length - 1));
+  const value = view[idx], ts = viewTs[idx];
+  const xPx = x(idx);
+  const yPx = y(value);
+
+  const crosshair = card.querySelector('[data-role="crosshair"]');
+  crosshair.style.left = xPx + 'px';
+  crosshair.classList.add('on');
+
+  const dot = card.querySelector('[data-role="dot"]');
+  dot.style.left = xPx + 'px';
+  dot.style.top = yPx + 'px';
+  dot.classList.add('on');
+
+  const tt = card.querySelector('[data-role="tooltip"]');
+  _setText(card.querySelector('[data-role="tt-value"]'), fmt2(value));
+  const d = new Date(ts / 1e6);
+  const timeStr = d.toLocaleTimeString([], { hour12: false }) + '.' +
+                  String(d.getMilliseconds()).padStart(3, '0');
+  _setText(card.querySelector('[data-role="tt-time"]'), timeStr);
+  tt.style.left = Math.max(60, Math.min(W - 60, xPx)) + 'px';
+  tt.style.top = Math.max(30, yPx) + 'px';
+  tt.classList.add('on');
+}
+
+function _hideTooltip(card) {
+  card.querySelector('[data-role="crosshair"]').classList.remove('on');
+  card.querySelector('[data-role="dot"]').classList.remove('on');
+  card.querySelector('[data-role="tooltip"]').classList.remove('on');
+}
+
+function _fmtTimeShort(ns) {
+  return new Date(ns / 1e6).toLocaleTimeString([], { hour12: false });
+}
+
+// -------- 多线时序图(GPU 对比) --------
+// 8 张卡叠在同一 Y 轴。同一时刻的 crosshair + tooltip 会列出所有卡值,按大小排序。
+const GPU_PALETTE = [
+  '#2563eb', '#dc2626', '#059669', '#d97706',
+  '#7c3aed', '#0891b2', '#db2777', '#65a30d',
+];
+
+function _buildMultiChart(id, title, unit) {
+  return `<div class="card multi-chart" data-id="${id}">
+    <div class="mc-head">
+      <span class="chart-title">${title}</span>
+      <span class="mc-unit">${unit || ''}</span>
+    </div>
+    <div class="mc-legend" data-role="legend"></div>
+    <div class="mc-wrap" data-role="wrap">
+      <svg class="chart" preserveAspectRatio="none" data-role="svg"></svg>
+      <div class="chart-crosshair" data-role="crosshair"></div>
+      <div class="mc-tooltip" data-role="tooltip"></div>
+    </div>
+  </div>`;
+}
+
+function _fmtMetric(v, unit) {
+  if (!Number.isFinite(v)) return '--';
+  const abs = Math.abs(v);
+  let s;
+  if (abs >= 1000) s = (v / 1000).toFixed(2) + 'K';
+  else if (abs >= 100) s = v.toFixed(0);
+  else if (abs >= 10) s = v.toFixed(1);
+  else s = v.toFixed(2);
+  return unit ? `${s} ${unit}` : s;
+}
+
+function _updateMultiChart(card, seriesMap, ts, unit) {
+  const wrap = card.querySelector('[data-role="wrap"]');
+  const svg = card.querySelector('svg.chart');
+  const rect = wrap.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if (W < 20 || H < 20) {
+    // 首次渲染时 grid 可能还没算好尺寸,等 ResizeObserver 触发再画
+    _installMultiChartHandlers(card);
+    card._mcPending = { seriesMap, ts, unit };
+    return;
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const names = Object.keys(seriesMap);
+  if (!names.length) return;
+
+  // 卡与卡采样点数量应一致(同一采样线程一起写),不齐时按最短对齐,避免错位
+  const seriesArr = names.map(n => seriesMap[n]);
+  const len = Math.min(ts.length, ...seriesArr.map(a => a.length));
+  if (len < 2) return;
+  const viewTs = ts.slice(-len);
+  const viewSeries = seriesArr.map(a => a.slice(-len));
+
+  const hidden = card._mcHidden || new Set();
+  // Y 轴范围:忽略隐藏系列;全 0 时用 [0,1] 避免除零抖动
+  const flat = [];
+  for (let i = 0; i < names.length; i++) {
+    if (hidden.has(names[i])) continue;
+    for (const v of viewSeries[i]) if (Number.isFinite(v)) flat.push(v);
+  }
+  let min = flat.length ? Math.min(...flat) : 0;
+  let max = flat.length ? Math.max(...flat) : 1;
+  if (max === min) { max = min + 1; }
+  // 稍微给上下留白,避免线贴边
+  const pad = (max - min) * 0.06;
+  min -= pad; max += pad;
+  if (min < 0 && flat.every(v => v >= 0)) min = 0;
+  const range = max - min;
+
+  const PAD_L = 44, PAD_R = 8, PAD_T = 6, PAD_B = 18;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+  const x = i => PAD_L + (i / (len - 1)) * innerW;
+  const y = v => PAD_T + innerH - ((v - min) / range) * innerH;
+
+  const parts = [];
+  for (let g = 0; g <= 4; g++) {
+    const gy = PAD_T + (innerH * g / 4);
+    parts.push(`<line class="grid-line" x1="${PAD_L}" x2="${W - PAD_R}" y1="${gy}" y2="${gy}"/>`);
+  }
+  for (let i = 0; i < names.length; i++) {
+    if (hidden.has(names[i])) continue;
+    const color = GPU_PALETTE[i % GPU_PALETTE.length];
+    const s = viewSeries[i];
+    let d = '';
+    for (let j = 0; j < len; j++) {
+      const v = s[j];
+      if (!Number.isFinite(v)) continue;
+      d += `${d ? 'L' : 'M'}${x(j).toFixed(1)},${y(v).toFixed(1)} `;
+    }
+    if (d) parts.push(`<path fill="none" stroke="${color}" stroke-width="1.4" stroke-linejoin="round" d="${d}"/>`);
+  }
+  // Y 轴刻度(3 格)
+  const yLabel = (frac) => _fmtMetric(min + range * (1 - frac), unit);
+  parts.push(`<text class="axis" x="${PAD_L - 4}" y="${PAD_T + 4}" text-anchor="end">${yLabel(0)}</text>`);
+  parts.push(`<text class="axis" x="${PAD_L - 4}" y="${PAD_T + innerH / 2 + 3}" text-anchor="end">${yLabel(0.5)}</text>`);
+  parts.push(`<text class="axis" x="${PAD_L - 4}" y="${PAD_T + innerH}" text-anchor="end">${yLabel(1)}</text>`);
+  // X 轴刻度(首/中/尾)
+  parts.push(`<text class="axis" x="${PAD_L}" y="${H - 4}" text-anchor="start">${_fmtTimeShort(viewTs[0])}</text>`);
+  parts.push(`<text class="axis" x="${W / 2}" y="${H - 4}" text-anchor="middle">${_fmtTimeShort(viewTs[Math.floor(len / 2)])}</text>`);
+  parts.push(`<text class="axis" x="${W - PAD_R}" y="${H - 4}" text-anchor="end">${_fmtTimeShort(viewTs[len - 1])}</text>`);
+  svg.innerHTML = parts.join('');
+
+  // 图例:显示最新值 + 点击可切换显示
+  const lastVals = viewSeries.map(s => s[s.length - 1]);
+  const legend = card.querySelector('[data-role="legend"]');
+  const legendHtml = names.map((n, i) => {
+    const c = GPU_PALETTE[i % GPU_PALETTE.length];
+    const off = hidden.has(n) ? ' off' : '';
+    return `<span class="mc-item${off}" data-name="${n}">
+      <span class="mc-swatch" style="background:${c}"></span>${n}
+      <span class="mc-val">${_fmtMetric(lastVals[i], unit)}</span>
+    </span>`;
+  }).join('');
+  _setIfChanged(legend, legendHtml);
+
+  card._mcState = { names, series: viewSeries, ts: viewTs, x, y, PAD_L, PAD_R, unit, hidden };
+  _installMultiChartHandlers(card);
+}
+
+function _installMultiChartHandlers(card) {
+  if (card._mcBound) return;
+  card._mcBound = true;
+  const wrap = card.querySelector('[data-role="wrap"]');
+  wrap.addEventListener('mousemove', e => {
+    const r = wrap.getBoundingClientRect();
+    _mcShowTooltip(card, e.clientX - r.left);
+  });
+  wrap.addEventListener('mouseleave', () => _mcHideTooltip(card));
+  new ResizeObserver(() => {
+    // resize 后如果之前是 pending 状态就补画,已有 state 也重画一次拿新尺寸
+    const pending = card._mcPending;
+    if (pending) {
+      card._mcPending = null;
+      _updateMultiChart(card, pending.seriesMap, pending.ts, pending.unit);
+    } else if (card._mcLastArgs) {
+      const [sm, t, u] = card._mcLastArgs;
+      _updateMultiChart(card, sm, t, u);
+    }
+  }).observe(wrap);
+  // 图例点击 = 切显示
+  card.querySelector('[data-role="legend"]').addEventListener('click', e => {
+    const item = e.target.closest('.mc-item');
+    if (!item) return;
+    const name = item.dataset.name;
+    const hidden = card._mcHidden = card._mcHidden || new Set();
+    if (hidden.has(name)) hidden.delete(name); else hidden.add(name);
+    if (card._mcLastArgs) {
+      const [sm, t, u] = card._mcLastArgs;
+      _updateMultiChart(card, sm, t, u);
+    }
+  });
+}
+
+function _mcShowTooltip(card, mouseX) {
+  const s = card._mcState;
+  if (!s) return;
+  const { names, series, ts, x, PAD_L, PAD_R, unit, hidden } = s;
+  const wrap = card.querySelector('[data-role="wrap"]');
+  const rect = wrap.getBoundingClientRect();
+  const W = rect.width;
+  if (mouseX < PAD_L - 2 || mouseX > W - PAD_R + 2) { _mcHideTooltip(card); return; }
+  const innerW = W - PAD_L - PAD_R;
+  const rel = Math.max(0, Math.min(1, (mouseX - PAD_L) / innerW));
+  const len = series[0].length;
+  const idx = Math.round(rel * (len - 1));
+  const xPx = x(idx);
+
+  const crosshair = card.querySelector('[data-role="crosshair"]');
+  crosshair.style.left = xPx + 'px';
+  crosshair.classList.add('on');
+
+  // 按当前值降序 —— 一眼看清谁最高
+  const rows = names.map((n, i) => ({
+    name: n, val: series[i][idx],
+    color: GPU_PALETTE[i % GPU_PALETTE.length],
+    off: hidden.has(n),
+  })).sort((a, b) => (b.val || 0) - (a.val || 0));
+
+  const tt = card.querySelector('[data-role="tooltip"]');
+  tt.innerHTML =
+    `<div class="tt-time">${_fmtTimeShort(ts[idx])}</div>` +
+    rows.map(r => `<div class="tt-line" style="${r.off ? 'opacity:0.35' : ''}">
+      <span class="tt-sw" style="background:${r.color}"></span>${r.name}
+      <span class="tt-v">${_fmtMetric(r.val, unit)}</span></div>`).join('');
+
+  // tooltip 放光标右侧,靠边时翻到左侧
+  const tw = 180;
+  let tx = xPx + 12;
+  if (tx + tw > W) tx = Math.max(4, xPx - tw - 12);
+  tt.style.left = tx + 'px';
+  tt.style.top = '4px';
+  tt.classList.add('on');
+}
+
+function _mcHideTooltip(card) {
+  const ch = card.querySelector('[data-role="crosshair"]');
+  const tt = card.querySelector('[data-role="tooltip"]');
+  if (ch) ch.classList.remove('on');
+  if (tt) tt.classList.remove('on');
+}
+
+function _renderMultiChart(card, seriesMap, ts, unit) {
+  card._mcLastArgs = [seriesMap, ts, unit];
+  _updateMultiChart(card, seriesMap, ts, unit);
+}
+
+function _ensureCard(container, id, buildFn) {
+  let el = container.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!el) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildFn(id).trim();
+    el = tmp.firstElementChild;
+    if (!el.dataset.id) el.dataset.id = id;
+    container.appendChild(el);
+  }
+  return el;
+}
+
+// -------- KPI 骨架:一次性建 --------
+
+const REQ_KPIS = [
+  { id: 'total_req', label: '范围内请求数' },
+  { id: 'qps', label: '平均 QPS' },
+  { id: 'waiting', label: '等待队列' },
+  { id: 'running', label: '运行队列' },
+  { id: 'swapped', label: 'Swap 队列' },
+];
+const HOST_KPIS = [
+  { id: 'cpu', label: 'CPU 使用率' },
+  { id: 'mem', label: '内存使用率' },
+  { id: 'net_in', label: '网络入' },
+  { id: 'net_out', label: '网络出' },
+];
+const VLLM_KPIS = [
+  { id: 'kv_hit_ratio', label: 'KV 命中率' },
+  { id: 'kv_gpu_usage', label: 'KV 显存占用' },
+  { id: 'prefill_tps', label: 'Prefill tokens/s' },
+  { id: 'decode_tps', label: 'Decode tokens/s' },
+  { id: 'prefill_batch', label: 'Prefill batch' },
+  { id: 'decode_batch', label: 'Decode batch' },
+  { id: 'steps_per_sec', label: '调度频率 /s' },
+  { id: 'hit_tokens', label: '命中 tokens' },
+];
+const LATENCY_KPIS = [
+  { id: 'lat_count', label: '样本数' },
+  { id: 'lat_avg', label: '平均' },
+  { id: 'lat_p50', label: 'P50' },
+  { id: 'lat_p95', label: 'P95' },
+  { id: 'lat_p99', label: 'P99' },
+  { id: 'lat_max', label: '最大' },
+  { id: 'ttft_p50', label: 'TTFT P50' },
+  { id: 'ttft_p95', label: 'TTFT P95' },
+];
+
+function _fmtRange(sec) {
+  if (sec < 60) return sec + ' 秒';
+  if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+  return (sec / 3600).toFixed(sec % 3600 === 0 ? 0 : 1) + ' 小时';
+}
+function _fmtMs(v) {
+  if (v == null) return '--';
+  if (v < 1) return v.toFixed(2) + ' ms';
+  if (v < 1000) return v.toFixed(1) + ' ms';
+  if (v < 60000) return (v / 1000).toFixed(2) + ' s';
+  return (v / 60000).toFixed(1) + ' min';
+}
+function _bucketLabel(le) {
+  if (le == null) return '∞';
+  return _fmtMs(le);
+}
+
+// ==================== 直方图 ====================
+
+function _buildHistCard(id, title) {
+  return `<div class="card hist-card" data-id="${id}">
+    <div class="hist-title">
+      <span class="t-main">${title}</span>
+      <span class="t-sub" data-role="sub">--</span>
+    </div>
+    <svg class="hist-svg" preserveAspectRatio="none" data-role="svg"></svg>
+  </div>`;
+}
+
+function _renderHistogram(card, dist, opts = {}) {
+  const sub = `样本 ${dist.count} · P95 ${_fmtMs(dist.p95_ms)} · P99 ${_fmtMs(dist.p99_ms)} · max ${_fmtMs(dist.max_ms)}`;
+  _setText(card.querySelector('[data-role="sub"]'), sub);
+
+  const svg = card.querySelector('svg.hist-svg');
+  const wrap = card;
+  const rect = svg.getBoundingClientRect();
+  const W = rect.width || 400, H = rect.height || 160;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  const buckets = dist.buckets;
+  if (!buckets || !buckets.length) { svg.innerHTML = ''; return; }
+  const PAD_L = 24, PAD_R = 8, PAD_T = 10, PAD_B = 36;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+  const maxCount = Math.max(1, ...buckets.map(b => b.count));
+  const barW = innerW / buckets.length;
+  const gap = Math.max(1, barW * 0.15);
+
+  // 用 warn 色标出 p95/p99 落在的桶
+  const p95 = dist.p95_ms, p99 = dist.p99_ms;
+  const _cls = (b) => {
+    if (b.le_ms == null) return b.count > 0 ? 'bar err' : 'bar';
+    if (p99 > 0 && b.le_ms >= p99) return 'bar err';
+    if (p95 > 0 && b.le_ms >= p95) return 'bar warn';
+    return 'bar';
+  };
+
+  const parts = [];
+  // baseline
+  parts.push(`<line class="baseline" x1="${PAD_L}" x2="${W - PAD_R}" y1="${PAD_T + innerH}" y2="${PAD_T + innerH}"/>`);
+  // y 轴刻度(0 / max)
+  parts.push(`<text class="axis" x="${PAD_L - 4}" y="${PAD_T + 8}" text-anchor="end">${maxCount}</text>`);
+  parts.push(`<text class="axis" x="${PAD_L - 4}" y="${PAD_T + innerH}" text-anchor="end">0</text>`);
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const h = b.count > 0 ? (b.count / maxCount) * innerH : 0;
+    const x = PAD_L + i * barW + gap / 2;
+    const y = PAD_T + innerH - h;
+    const w = barW - gap;
+    parts.push(`<rect class="${_cls(b)}" x="${x}" y="${y}" width="${w}" height="${h}">
+      <title>${_bucketLabel(b.le_ms)} · ${b.count}</title>
+    </rect>`);
+    // 桶上方数字(count > 0 才画,避免拥挤)
+    if (b.count > 0) {
+      parts.push(`<text class="count-label" x="${x + w / 2}" y="${y - 3}" text-anchor="middle">${b.count}</text>`);
+    }
+    // x 轴标签(每隔一个画,避免拥挤)
+    if (i % 2 === 0 || i === buckets.length - 1) {
+      parts.push(`<text class="axis" x="${x + w / 2}" y="${H - PAD_B + 12}" text-anchor="middle">${_bucketLabel(b.le_ms)}</text>`);
+    }
+  }
+  // 单位说明
+  parts.push(`<text class="axis" x="${PAD_L}" y="${H - 4}" text-anchor="start">耗时区间</text>`);
+  parts.push(`<text class="axis" x="${W - PAD_R}" y="${H - 4}" text-anchor="end">请求数</text>`);
+
+  svg.innerHTML = parts.join('');
+}
+
+// ==================== 启动阶段(SGLang/vLLM 统一)====================
+const _SU_PHASES = ['参数解析/配置', '环境/依赖初始化', '加载 Tokenizer 与模型配置',
+                    '加载模型权重', '分布式/KV 初始化', '总启动时长'];
+const _SU_ENG = { 1: 'vLLM', 2: 'SGLang' };
+
+function _renderStartup(tbody, bySource) {
+  if (!tbody) return;
+  const hb = bySource['startup'];
+  if (!hb || !hb.items.length) {
+    _setIfChanged(tbody, '<tr><td colspan="4" style="color:var(--muted)">尚未采集到启动阶段数据(重启引擎后出现)</td></tr>');
+    return;
+  }
+  // 按 引擎+阶段 聚合:耗时取该组最大(权重在多 TP 进程并行),记进程数
+  const g = {};
+  for (const it of hb.items) {
+    const v = it.values || {};
+    const k = (v.eng | 0) + ':' + (v.ph | 0);
+    if (!g[k]) g[k] = { eng: v.eng | 0, ph: v.ph | 0, dur: 0, pids: new Set() };
+    const row = g[k];
+    if ((v.dur_ms || 0) > row.dur) row.dur = v.dur_ms || 0;
+    row.pids.add(v.pid | 0);
+  }
+  const rows = Object.values(g).sort((a, b) => a.eng - b.eng || a.ph - b.ph);
+  let html = '';
+  for (const r of rows) {
+    const label = _SU_PHASES[r.ph] !== undefined ? _SU_PHASES[r.ph] : ('阶段' + r.ph);
+    html += `<tr>
+      <td><span class="tag">${_SU_ENG[r.eng] || r.eng}</span></td>
+      <td>${label}</td>
+      <td class="num">${_fmtMsNum(r.dur)}</td>
+      <td>${r.pids.size}</td></tr>`;
+  }
+  _setIfChanged(tbody, html);
+}
+
+async function refreshOverview() {
+  _setupRangeBar();
+  _ensureKpiGrid($('kpi-host'), HOST_KPIS);
+  _ensureKpiGrid($('kpi-vllm'), VLLM_KPIS);
+
+  const rs = _rangeSec;
+  _setText($('range-stats'), _fmtRange(rs));
+  const sourcesResp = await fetchJSON('/api/heartbeat/sources');
+  const sources = sourcesResp.sources || [];
+
+  // 一次请求取时间窗内全部 source 的心跳(8 卡不再各打一次),前端按 source 分组。
+  const tailResp = await fetchJSON(`/api/heartbeat/tail?since_sec=${rs}`);
+  const bySource = {};
+  for (const it of tailResp.items || []) {
+    (bySource[it.source] = bySource[it.source] || { items: [] }).items.push(it);
+  }
+  const latestOf = src => {
+    const hb = bySource[src];
+    return hb && hb.items.length ? hb.items[hb.items.length - 1].values : null;
+  };
+
+  _renderStartup($('startup-tbody'), bySource);
+
+  // ==== GPU 硬件表(每行一张卡)====
+  const gpuSources = sources.filter(s => s.startsWith('gpu:'));
+  _renderGpuTable($('gpu-tbody'), gpuSources, latestOf);
+
+  // ==== GPU 多卡时序对比:4 张图(显存 / 温度 / 功耗 / 带宽),每张 8 条线 ====
+  const mcGrid = $('gpu-multi-grid');
+  const gpuHbs = gpuSources
+    .map(src => ({ src, idx: src.split(':')[2], hb: bySource[src] }))
+    .filter(g => g.hb && g.hb.items.length)
+    .sort((a, b) => (+a.idx) - (+b.idx));  // GPU 0..7 顺序稳定,颜色不会跳
+  if (gpuHbs.length) {
+    // 各卡采样点数量一致(同一采样线程按序 append);不齐时按最短对齐
+    const minLen = Math.min(...gpuHbs.map(g => g.hb.items.length));
+    const baseTs = gpuHbs[0].hb.items.slice(-minLen).map(it => it.ts_ns);
+    const MC_SPECS = [
+      { id: 'mc:util', title: 'GPU 利用率', unit: '%', pick: v => +v.util_pct || 0 },
+      {
+        id: 'mc:vram', title: '显存利用率', unit: '%',
+        pick: v => {
+          const tot = +v.vram_total_mb || 0;
+          const used = +v.vram_used_mb || 0;
+          if (tot > 0) return used / tot * 100;
+          return +v.mem_used_pct || 0;  // hy-smi 直接给百分比时兜底
+        },
+      },
+      { id: 'mc:temp', title: '温度', unit: '°C', pick: v => +v.temperature_c || 0 },
+      { id: 'mc:power', title: '功耗', unit: 'W', pick: v => +v.power_w || 0 },
+      {
+        id: 'mc:bw', title: 'PCIe 带宽(总)', unit: 'MB/s',
+        pick: v => {
+          const tx = +v.pcie_tx_mbps || 0, rx = +v.pcie_rx_mbps || 0;
+          return (tx || rx) ? tx + rx : (+v.pcie_used_mbps || 0);
+        },
+      },
+      { id: 'mc:h2d', title: 'PCIe H2D 带宽', unit: 'MB/s', pick: v => +v.pcie_tx_mbps || 0 },
+      { id: 'mc:d2h', title: 'PCIe D2H 带宽', unit: 'MB/s', pick: v => +v.pcie_rx_mbps || 0 },
+    ];
+    const seenMc = new Set();
+    for (const spec of MC_SPECS) {
+      seenMc.add(spec.id);
+      const card = _ensureCard(mcGrid, spec.id,
+        () => _buildMultiChart(spec.id, spec.title, spec.unit));
+      const seriesMap = {};
+      for (const g of gpuHbs) {
+        const items = g.hb.items.slice(-minLen);
+        seriesMap[`GPU ${g.idx}`] = items.map(it => spec.pick(it.values));
+      }
+      _renderMultiChart(card, seriesMap, baseTs, spec.unit);
+    }
+    for (const el of Array.from(mcGrid.querySelectorAll('[data-id]'))) {
+      if (!seenMc.has(el.dataset.id)) el.remove();
+    }
+  } else {
+    _setIfChanged(mcGrid, '');
+  }
+
+  // ==== 主机 KPI ====
+  const host = latestOf('host') || {};
+  const cpu = +host.cpu_pct || 0;
+  const mem = +host.mem_pct || 0;
+  _updateKpi($('kpi-host'), 'cpu', cpu.toFixed(1) + ' %', '',
+    _pctLevel(cpu, 80, 95));
+  _updateKpi($('kpi-host'), 'mem', mem.toFixed(1) + ' %', '',
+    _pctLevel(mem, 85, 95));
+  _updateKpi($('kpi-host'), 'net_in', _fmtBytes(+host.net_in_bps || 0) + '/s');
+  _updateKpi($('kpi-host'), 'net_out', _fmtBytes(+host.net_out_bps || 0) + '/s');
+
+  // ==== vLLM / SGLang KPI (框架无关) ====
+  const kv = latestOf('vllm.kv_cache') || latestOf('sglang.kv_cache') || {};
+  const prefill = latestOf('vllm.prefill') || latestOf('sglang.prefill') || {};
+  const decode = latestOf('vllm.decode') || latestOf('sglang.decode') || {};
+  const hitRatio = +kv.hit_ratio || 0;
+  const gpuUsage = +kv.gpu_cache_usage_pct || 0;
+  _updateKpi($('kpi-vllm'), 'kv_hit_ratio', hitRatio.toFixed(2) + ' %', '',
+    hitRatio > 30 ? '' : hitRatio > 5 ? 'warn' : 'err');
+  _updateKpi($('kpi-vllm'), 'kv_gpu_usage', gpuUsage.toFixed(1) + ' %', '',
+    _pctLevel(gpuUsage, 85, 95));
+  _updateKpi($('kpi-vllm'), 'prefill_tps',
+    _fmtInt(+prefill.tokens_per_sec || 0),
+    prefill.tokens_per_step ? `${(+prefill.tokens_per_step).toFixed(0)} tok/step` : '');
+  _updateKpi($('kpi-vllm'), 'decode_tps',
+    _fmtInt(+decode.tokens_per_sec || 0),
+    decode.steps_per_sec ? `${(+decode.steps_per_sec).toFixed(1)} step/s` : '');
+  _updateKpi($('kpi-vllm'), 'prefill_batch',
+    (+prefill.avg_batch_reqs || 0).toFixed(2));
+  _updateKpi($('kpi-vllm'), 'decode_batch',
+    (+decode.avg_batch_reqs || 0).toFixed(2));
+  _updateKpi($('kpi-vllm'), 'steps_per_sec',
+    (+decode.steps_per_sec || 0).toFixed(2));
+  _updateKpi($('kpi-vllm'), 'hit_tokens', _fmtInt(+kv.hit_tokens_total || 0));
+
+  // ==== 时序曲线:关键指标 ====
+  const charts = $('charts');
+  const chartSpecs = [];
+  // 请求吞吐(每秒完成)
+  if (bySource['vllm.throughput']) {
+    chartSpecs.push({ src: 'vllm.throughput', key: 'qps', label: 'QPS (每秒完成)' });
+    chartSpecs.push({ src: 'vllm.throughput', key: 'avg_latency_ms', label: '平均请求耗时 ms' });
+  }
+  // 队列
+  if (bySource['vllm.queue']) {
+    chartSpecs.push({ src: 'vllm.queue', key: 'running', label: '运行队列' });
+    chartSpecs.push({ src: 'vllm.queue', key: 'waiting', label: '等待队列' });
+  }
+  // KV cache (vLLM 或 SGLang)
+  const kvSrc = bySource['vllm.kv_cache'] ? 'vllm.kv_cache'
+              : bySource['sglang.kv_cache'] ? 'sglang.kv_cache' : null;
+  if (kvSrc) {
+    chartSpecs.push({ src: kvSrc, key: 'hit_ratio', label: 'KV 命中率 %' });
+    chartSpecs.push({ src: kvSrc, key: 'gpu_cache_usage_pct', label: 'KV 显存占用 %' });
+    chartSpecs.push({ src: kvSrc, key: 'gpu_blocks_used', label: 'KV blocks 已用' });
+  }
+  // prefill / decode 吞吐(vllm 或 sglang)
+  const prefillSrc = bySource['vllm.prefill'] ? 'vllm.prefill'
+                    : bySource['sglang.prefill'] ? 'sglang.prefill' : null;
+  const decodeSrc = bySource['vllm.decode'] ? 'vllm.decode'
+                   : bySource['sglang.decode'] ? 'sglang.decode' : null;
+  if (prefillSrc) {
+    chartSpecs.push({ src: prefillSrc, key: 'tokens_per_sec', label: 'Prefill tokens/s' });
+    chartSpecs.push({ src: prefillSrc, key: 'avg_batch_reqs', label: 'Prefill batch' });
+  }
+  if (decodeSrc) {
+    chartSpecs.push({ src: decodeSrc, key: 'tokens_per_sec', label: 'Decode tokens/s' });
+    chartSpecs.push({ src: decodeSrc, key: 'avg_batch_reqs', label: 'Decode batch' });
+  }
+  // 每卡 GPU 利用率曲线已移到「GPU 时序对比」(多卡叠加),这里不再重复铺卡曲线。
+  // host cpu / mem
+  if (bySource['host']) {
+    chartSpecs.push({ src: 'host', key: 'cpu_pct', label: 'host CPU %' });
+    chartSpecs.push({ src: 'host', key: 'mem_pct', label: 'host 内存 %' });
+  }
+  const seenChart = new Set();
+  for (const spec of chartSpecs) {
+    const id = `chart:${spec.src}:${spec.key}`;
+    seenChart.add(id);
+    const card = _ensureCard(charts, id, () => _buildChartCard(id, spec.label));
+    const hb = bySource[spec.src];
+    const series = hb.items.map(it => it.values[spec.key] ?? 0);
+    const ts = hb.items.map(it => it.ts_ns);
+    _updateChart(card, series, ts);
+  }
+  for (const el of Array.from(charts.querySelectorAll('[data-id]'))) {
+    if (!seenChart.has(el.dataset.id)) el.remove();
+  }
+}
+
+function _fmtBytes(n) {
+  if (n < 1024) return n.toFixed(0) + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+function _fmtInt(n) {
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n / 1e3).toFixed(1) + 'K';
+  if (n < 1e9) return (n / 1e6).toFixed(2) + 'M';
+  return (n / 1e9).toFixed(2) + 'B';
+}
+
+// ==================== Transactions 列表 ====================
+// SGLang 0.5 词表:没有 "prefill" 模式,新序列(prefill)叫 EXTEND;
+// MIXED=prefill+decode,SPLIT_PREFILL=分块 prefill。给可读标签。
+function _modeLabel(m) {
+  const m2 = (m || '').toLowerCase();
+  if (m2 === 'decode') return { txt: 'decode', cls: 'ok' };
+  if (m2 === 'extend' || m2 === 'prefill') return { txt: 'prefill(extend)', cls: '' };
+  if (m2 === 'mixed') return { txt: 'prefill+decode', cls: 'warn' };
+  if (m2 === 'split_prefill') return { txt: 'prefill(分块)', cls: '' };
+  if (m2.includes('draft') || m2.includes('verify')) return { txt: m + ' ·spec', cls: 'warn' };
+  return { txt: m, cls: '' };
+}
+
+// 引擎事务:Scheduler 逐 batch 执行明细(分页 + 时间窗 + PID 过滤)
+const SST_ST = { page: 0, pageSize: 100, pid: '', sinceSec: 3600, pages: 1 };
+async function refreshTx() {
+  const st = SST_ST;
+  const q = `/api/scheduler/steps?limit=${st.pageSize}&offset=${st.page * st.pageSize}` +
+    (st.sinceSec > 0 ? `&since_sec=${st.sinceSec}` : '') +
+    (st.pid ? `&pid=${encodeURIComponent(st.pid)}` : '');
+  let resp;
+  try { resp = await fetchJSON(q); } catch { return; }
+  const items = resp.items || [];
+  const total = resp.total || 0;
+  st.pages = Math.max(1, Math.ceil(total / st.pageSize));
+  if (st.page >= st.pages) { st.page = st.pages - 1; return refreshTx(); }
+  let html = '';
+  for (const s of items) {
+    const L = _modeLabel(s.mode);
+    const modeCell = L.cls === 'ok'
+      ? '<span class="pill ok">' + L.txt + '</span>'
+      : L.cls === 'warn'
+        ? '<span class="tag" style="background:#fef3c7;color:#92400e">' + L.txt + '</span>'
+        : '<span class="tag">' + L.txt + '</span>';
+    html += `<tr>
+      <td>${fmtTime(s.ts_ns)}</td>
+      <td>${s.pid}</td>
+      <td>${modeCell}</td>
+      <td>${s.batch_reqs}</td>
+      <td>${s.batch_tokens}</td>
+      <td>${_fmtMsNum(s.dur_ms)}</td></tr>`;
+  }
+  const emptyTxt = (st.pid || st.sinceSec > 0)
+    ? '无匹配记录(换时间窗或清 PID 再试)' : '暂无 batch 执行记录(发请求后出现)';
+  if (!html) html = `<tr><td colspan="6" style="color:var(--muted)">${emptyTxt}</td></tr>`;
+  _setIfChanged($('tx-tbody'), html);
+  _setText($('sst-info'),
+    `${st.pages > 1 ? `第 ${st.page + 1}/${st.pages} 页 · ` : ''}共 ${total} 条`);
+  const prev = $('sst-prev'), next = $('sst-next');
+  prev.disabled = st.page <= 0; next.disabled = st.page >= st.pages - 1;
+  prev.style.opacity = prev.disabled ? 0.4 : 1;
+  next.style.opacity = next.disabled ? 0.4 : 1;
+}
+function sstApply() {
+  SST_ST.pid = ($('sst-pid').value || '').trim();
+  SST_ST.sinceSec = +$('sst-since').value || 0;
+  SST_ST.page = 0;
+  refreshTx();
+}
+function sstGo(delta) {
+  SST_ST.page = Math.max(0, Math.min(SST_ST.pages - 1, SST_ST.page + delta));
+  refreshTx();
+}
+(function bindSstUI() {
+  $('sst-pid').addEventListener('keydown', e => { if (e.key === 'Enter') sstApply(); });
+  $('sst-since').addEventListener('change', sstApply);
+  $('sst-size').addEventListener('change', () => {
+    SST_ST.pageSize = +$('sst-size').value || 100;
+    SST_ST.page = 0;
+    refreshTx();
+  });
+})();
+
+function _fmtMsNum(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '--';
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s';
+  return ms.toFixed(1) + ' ms';
+}
+
+// 请求追踪分页状态
+const TRACE_ST = { page: 0, pageSize: 20, rid: '', sinceSec: 3600, pages: 1 };
+
+async function refreshTraces() {
+  const st = TRACE_ST;
+  const q = `/api/traces?limit=${st.pageSize}&offset=${st.page * st.pageSize}` +
+    (st.sinceSec > 0 ? `&since_sec=${st.sinceSec}` : '') +
+    (st.rid ? `&rid=${encodeURIComponent(st.rid)}` : '');
+  let resp;
+  try { resp = await fetchJSON(q); } catch { return; }
+  const items = resp.items || [];
+  const total = resp.total || 0;
+  st.pages = Math.max(1, Math.ceil(total / st.pageSize));
+  if (st.page >= st.pages) { st.page = st.pages - 1; return refreshTraces(); }
+  let html = '';
+  for (const t of items) {
+    const errCls = (t.status && t.status !== '0') ? ' class="err"' : '';
+    const stp = (!t.status || t.status === '0')
+      ? '<span class="pill ok">ok</span>'
+      : `<span class="pill err">${t.status}</span>`;
+    const ridShort = t.rid.length > 24 ? t.rid.slice(0, 22) + '…' : t.rid;
+    html += `<tr${errCls}>
+      <td>${fmtTime(t.arrival_ts)}</td>
+      <td><a class="link" onclick="openTrace('${encodeURIComponent(t.rid).replace(/'/g, "%27")}')" title="${t.rid}">${ridShort}</a></td>
+      <td>${_fmtMsNum(t.ttft_ms)}</td>
+      <td>${_fmtMsNum(t.tpot_ms)}</td>
+      <td>${t.output_tokens || 0}</td>
+      <td>${_fmtMsNum(t.e2e_ms)}</td>
+      <td>${stp}</td>
+      <td>${t.pid || ''}</td></tr>`;
+  }
+  const emptyTxt = (st.rid || st.sinceSec > 0)
+    ? '无匹配请求(换时间窗或清空 rid 再试)' : '暂无已完成请求(发几个请求后出现)';
+  if (!html) html = `<tr><td colspan="8" style="color:var(--muted)">${emptyTxt}</td></tr>`;
+  _setIfChanged($('trace-tbody'), html);
+  // 分页信息 + 翻页按钮可用态
+  const shown = st.page * st.pageSize + items.length;
+  _setText($('trace-info'),
+    `${st.pages > 1 ? `第 ${st.page + 1}/${st.pages} 页 · ` : ''}共 ${total} 条` +
+    (items.length ? ` · 显示 ${shown} 条` : ''));
+  const prev = $('trace-prev'), next = $('trace-next');
+  prev.disabled = st.page <= 0; next.disabled = st.page >= st.pages - 1;
+  prev.style.opacity = prev.disabled ? 0.4 : 1;
+  next.style.opacity = next.disabled ? 0.4 : 1;
+  _kvStat();
+}
+
+async function _kvStat() {
+  for (const src of ['sglang.kv_cache', 'vllm.kv_cache']) {
+    try {
+      const r = await fetchJSON('/api/heartbeat/latest?source=' + encodeURIComponent(src));
+      const v = r.values || {};
+      const hit = +v.hit_ratio;
+      if (Number.isFinite(hit) && r.ts_ns > 0) {
+        const hitT = +v.hit_tokens_total || 0, totT = +v.prompt_tokens_total || 0;
+        const gpu = +v.gpu_cache_usage_pct;
+        _setText($('kv-stat'),
+          `KV 命中率 <b style="color:${hit > 30 ? 'var(--ok)' : 'var(--err)'}">${hit.toFixed(2)}%</b>` +
+          (totT ? ` · ${_fmtInt(hitT)}/${_fmtInt(totT)} tok` : '') +
+          (gpu > 0 ? ` · 显存 ${gpu.toFixed(1)}%` : ''));
+        return;
+      }
+    } catch { }
+  }
+}
+
+function traceApply() {
+  TRACE_ST.rid = ($('trace-q-rid').value || '').trim();
+  TRACE_ST.sinceSec = +$('trace-q-since').value || 0;
+  TRACE_ST.page = 0;
+  refreshTraces();
+}
+function traceGo(delta) {
+  TRACE_ST.page = Math.max(0, Math.min(TRACE_ST.pages - 1, TRACE_ST.page + delta));
+  refreshTraces();
+}
+
+// 绑筛选控件事件
+(function bindTraceUI() {
+  $('trace-q-rid').addEventListener('keydown', e => { if (e.key === 'Enter') traceApply(); });
+  $('trace-q-since').addEventListener('change', traceApply);
+  $('trace-page-size').addEventListener('change', () => {
+    TRACE_ST.pageSize = +$('trace-page-size').value || 20;
+    TRACE_ST.page = 0;
+    refreshTraces();
+  });
+})();
+
+// ==================== 时间段报告 ====================
+function _repBy() {
+  const sel = $('rep-by');
+  return (sel ? sel.value : 'any');
+}
+async function refreshReport() {
+  const t0 = performance.now();
+  let r;
+  try { r = await fetchJSON('/api/report?by=' + _repBy()); }
+  catch (e) { _setIfChanged($('rep-body'), '⚠ ' + e.message); return; }
+  _renderReport(r);
+  const el = $('rlog-rep');
+  if (el) _setText(el, `已生成 ${new Date().toLocaleTimeString()} · ${(performance.now() - t0).toFixed(0)} ms`);
+}
+async function reportPreset(mins) {
+  let r;
+  try { r = await fetchJSON(`/api/report?start_sec=${Math.floor(Date.now()/1000) - mins*60}&by=${_repBy()}`); }
+  catch (e) { _setIfChanged($('rep-body'), '⚠ ' + e.message); return; }
+  _renderReport(r, mins);
+}
+async function reportCustom() {
+  const st = new Date($('rep-start').value).getTime();
+  const en = new Date($('rep-end').value).getTime();
+  if (!Number.isFinite(st) || !Number.isFinite(en) || en <= st) {
+    _setIfChanged($('rep-body'), '时间不合法:起 > 止 或为空。'); return;
+  }
+  let r;
+  try {
+    r = await fetchJSON(`/api/report?start_sec=${Math.floor(st/1000)}&end_sec=${Math.floor(en/1000)}&by=${_repBy()}`);
+  }
+  catch (e) { _setIfChanged($('rep-body'), '⚠ ' + e.message); return; }
+  _renderReport(r);
+}
+function _distHtml(name, d) {
+  return `<tr><td><strong>${name}</strong></td>
+    <td>${d.count}</td><td>${_fmtMsNum(d.avg)}</td><td>${_fmtMsNum(d.p50)}</td>
+    <td>${_fmtMsNum(d.p95)}</td><td>${_fmtMsNum(d.p99)}</td></tr>`;
+}
+function _renderReport(r, presetMins) {
+  const spanTxt = presetMins
+    ? `最近 ${presetMins} 分钟`
+    : `${new Date(r.start_sec*1000).toLocaleString()} ~ ${new Date(r.end_sec*1000).toLocaleString()} (${r.span_sec}s)`;
+  const byTxt = { any: '窗口有交集', start: '按开始时间', finish: '按结束时间', both: '开始且结束都在窗口' };
+  const byNote = byTxt[_repBy()] ? ` · 口径:${byTxt[_repBy()]}` : '';
+  const pidRow = (r.by_pid && r.by_pid.length)
+    ? r.by_pid.map(p => `<span class="tag">pid ${p.pid} × ${p.count}</span>`).join(' ')
+    : '—';
+  const kpi = (k, v) => `<div class="card" style="padding:10px 14px;min-width:110px">
+      <div style="font-size:11px;color:var(--muted)">${k}</div>
+      <div style="font-size:20px;font-weight:600">${v}</div></div>`;
+  $('rep-body').innerHTML = `
+    <div style="margin:6px 0 10px">时段:${spanTxt}${byNote}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+      ${kpi('请求数', r.total)}${kpi('QPS', r.qps)}
+      ${kpi('输出 tokens/s', r.output_tok_per_sec)}
+      ${kpi('平均 prompt/out tokens', r.avg_prompt_tokens + ' / ' + r.avg_output_tokens)}
+      ${kpi('成功 / 失败', r.ok + ' / ' + r.fail)}
+    </div>
+    <div class="section-title">时延分布(ms)</div>
+    <table>
+      <thead><tr><th></th><th>样本数</th><th>avg</th><th>p50</th><th>p95</th><th>p99</th></tr></thead>
+      <tbody>
+        ${_distHtml('TTFT', r.ttft_ms)}
+        ${_distHtml('TPOT', r.tpot_ms)}
+        ${_distHtml('端到端 E2E', r.e2e_ms)}
+      </tbody>
+    </table>
+    <div class="section-title">按进程</div>
+    <div style="padding:4px 0">${pidRow}</div>
+    ${r.total === 0 ? '<div style="color:var(--muted);padding:8px 0">该时段无请求。</div>' : ''}`;
+}
+
+// ==================== Events / Metrics ====================
+async function refreshEv() {
+  const ev = await fetchJSON('/api/events/tail?n=100');
+  let html = '';
+  for (const e of ev.items.slice().reverse()) {
+    const errCls = e.status !== '0' ? ' class="err"' : '';
+    html += `<tr${errCls}>
+      <td>${fmtTime(e.ts_ns)}</td>
+      <td><span class="tag">${e.type}</span></td>
+      <td>${e.name}</td>
+      <td>${e.status}</td>
+      <td><code>${JSON.stringify(e.data)}</code></td></tr>`;
+  }
+  _setIfChanged($('ev-tbody'), html);
+}
+
+async function refreshMe() {
+  const me = await fetchJSON('/api/metrics/tail?n=100');
+  let html = '';
+  for (const m of me.items.slice().reverse()) {
+    html += `<tr>
+      <td>${fmtTime(m.ts_ns)}</td>
+      <td>${m.name}</td>
+      <td>${m.count}</td>
+      <td>${fmt2(m.sum)}</td>
+      <td><code>${JSON.stringify(m.tags)}</code></td></tr>`;
+  }
+  _setIfChanged($('me-tbody'), html);
+}
+
+// ==================== 手动刷新(请求追踪/事件/指标)====================
+async function manualRefresh(tab) {
+  const t0 = performance.now();
+  try {
+    if (tab === 'tx') { await Promise.all([refreshTx(), refreshTraces()]); }
+    else if (tab === 'ev') { await refreshEv(); }
+    else if (tab === 'me') { await refreshMe(); }
+  } catch (e) {
+    _setText($('rlog-' + tab), '⚠ ' + e.message);
+    return;
+  }
+  const el = $('rlog-' + tab);
+  if (el) _setText(el, `已刷新 ${new Date().toLocaleTimeString()} · ${(performance.now() - t0).toFixed(0)} ms`);
+}
+
+// ==================== 消息树 timeline (甘特) ====================
+async function openTx(id) {
+  const t = await fetchJSON('/api/transactions/' + id);
+  _renderTree(t);
+}
+
+async function openTrace(rid) {
+  const t = await fetchJSON('/api/trace/' + encodeURIComponent(rid));
+  _renderTree(t);
+}
+
+function _renderTree(t) {
+  const rootStart = t.start_ns;
+  const rootDur = Math.max(t.duration_ns, 1);
+  const rows = [];
+  flatten(t, 0, rows);
+
+  const timeline = rows.map(r => {
+    const offsetPct = ((r.node.start_ns - rootStart) / rootDur) * 100;
+    const widthPct = Math.max((r.node.duration_ns / rootDur) * 100, 0.2);
+    const barCls = r.node.status !== '0' ? 'tl-bar err' : 'tl-bar';
+    const indent = '  '.repeat(r.depth);
+    const label = `${indent}${r.depth ? '└─ ' : ''}${r.node.type} · ${r.node.name}`;
+    return `<div class="tl-row">
+      <div class="tl-label" title="${label}">${label}</div>
+      <div class="tl-bar-wrap"><div class="${barCls}" style="left:${offsetPct.toFixed(2)}%; width:${widthPct.toFixed(2)}%"></div></div>
+      <div class="tl-dur">${fmtMs(r.node.duration_ns)}</div>
+    </div>`;
+  }).join('');
+
+  const status = t.status === '0'
+    ? '<span class="pill ok">ok</span>'
+    : `<span class="pill err">${t.status}</span>`;
+
+  $('detail-body').innerHTML = `
+    <h3>${t.type} <span class="tag">${t.name}</span> ${status}</h3>
+    <div class="meta">
+      开始 ${fmtTime(t.start_ns)} · 端到端 ${fmtMs(t.duration_ns)} · ${rows.length} 个节点
+    </div>
+    <div class="timeline">${timeline}</div>
+    ${t.tags && Object.keys(t.tags).length ? `<h4>标签</h4><pre>${JSON.stringify(t.tags, null, 2)}</pre>` : ''}
+    ${t.data && Object.keys(t.data).length ? `<h4>数据</h4><pre>${JSON.stringify(t.data, null, 2)}</pre>` : ''}`;
+  $('detail').classList.add('on');
+}
+
+function flatten(node, depth, out) {
+  out.push({ node, depth });
+  for (const c of node.children || []) flatten(c, depth + 1, out);
+}
+
+function closeDetail() { $('detail').classList.remove('on'); }
+
+// ==================== 卡片布局引擎(拖/缩放/持久化)====================
+// 已在本地无头 Chrome 验证:拖标题排序、拖右下角缩放、localStorage 持久化、刷新保持。
+const DASH_KEY = 'llm.dash.layout.v1';
+const DASH_CFG = {
+  '#charts':         { cols: 2, defH: 256, minW: 320, minH: 220 },
+  '#gpu-multi-grid': { cols: 1, defH: 336, minW: 360, minH: 260 },
+};
+const DASH_GAP = 12;
+let _DASHL = {}, _dashEditing = false, _dragBox = null;
+
+function dashLoad() {
+  try { return JSON.parse(localStorage.getItem(DASH_KEY)) || {}; } catch { return {}; }
+}
+function dashPersist() {
+  try { localStorage.setItem(DASH_KEY, JSON.stringify(_DASHL)); } catch { }
+}
+function _dashChrome(el) {
+  if (!el.querySelector(':scope > .dash-grab')) {
+    const g = document.createElement('div'); g.className = 'dash-grab';
+    const s = document.createElement('div'); s.className = 'dash-se';
+    el.appendChild(g); el.appendChild(s);
+  }
+}
+function dashNormalize() {
+  _DASHL = dashLoad();
+  for (const sel of Object.keys(DASH_CFG)) {
+    const box = $(sel.slice(1));  // 页面 $ = getElementById,去 '#'
+    if (!box) continue;
+    if (_dragBox === box) continue;
+    const cfg = DASH_CFG[sel];
+    const cw = Math.max(box.clientWidth, 320);
+    const cols = cw > 720 ? cfg.cols : 1;
+    const w = Math.max(cfg.minW, Math.floor((cw - DASH_GAP * (cols + 1)) / cols));
+    const h = cfg.defH;
+    const store = _DASHL[sel] = _DASHL[sel] || {};
+    const colY = new Array(cols).fill(8);
+    let maxBottom = 8;
+    for (const el of Array.from(box.children)) {
+      if (!(el instanceof Element) || !el.dataset || !el.dataset.id) continue;
+      const id = el.dataset.id;
+      el.dataset.dash = id;
+      _dashChrome(el);
+      let st = store[id];
+      if (st && st.w >= cfg.minW && st.h >= cfg.minH) {
+        el.style.left = st.x + 'px'; el.style.top = st.y + 'px';
+        el.style.width = st.w + 'px'; el.style.height = st.h + 'px';
+        const ci = Math.min(cols - 1, Math.max(0, Math.round((st.x - 8) / (w + DASH_GAP))));
+        colY[ci] = Math.max(colY[ci], st.y + st.h + DASH_GAP);
+      } else {
+        let ci = 0;
+        for (let k = 1; k < cols; k++) if (colY[k] < colY[ci]) ci = k;
+        st = { x: 8 + ci * (w + DASH_GAP), y: colY[ci], w: w, h: h };
+        store[id] = st;
+        colY[ci] = colY[ci] + h + DASH_GAP;
+        el.style.left = st.x + 'px'; el.style.top = st.y + 'px';
+        el.style.width = st.w + 'px'; el.style.height = st.h + 'px';
+      }
+      maxBottom = Math.max(maxBottom, st.y + st.h);
+    }
+    box.style.height = (maxBottom + 8) + 'px';
+  }
+}
+function dashToggleEdit() {
+  _dashEditing = !_dashEditing;
+  document.body.classList.toggle('dash-editing', _dashEditing);
+  const b = $('dash-edit-btn');
+  b.textContent = _dashEditing ? '✓ 完成' : '✥ 编辑布局';
+  b.classList.toggle('on', _dashEditing);
+  const r = $('dash-reset-btn');
+  if (r) r.style.display = _dashEditing ? '' : 'none';
+  dashNormalize();
+}
+function dashReset() {
+  for (const sel of Object.keys(DASH_CFG)) delete _DASHL[sel];
+  dashPersist();
+  dashNormalize();
+}
+(function dashBind() {
+  let mode = null, card = null, box = null, ox = 0, oy = 0, sx = 0, sy = 0, sw = 0, sh = 0, sid = '', sSel = '';
+  window.addEventListener('pointerdown', e => {
+    if (!_dashEditing) return;
+    const g = e.target.closest('.dash-grab');
+    const s = e.target.closest('.dash-se');
+    if (!g && !s) return;
+    const el = (g || s).parentElement;
+    const boxEl = el.parentElement;
+    if (!boxEl || !boxEl.id) return;
+    mode = g ? 'move' : 'resize';
+    card = el; box = boxEl; _dragBox = boxEl;
+    sid = el.dataset.dash; sSel = '#' + boxEl.id;
+    sx = parseFloat(el.style.left) || 0; sy = parseFloat(el.style.top) || 0;
+    sw = parseFloat(el.style.width) || 300; sh = parseFloat(el.style.height) || 200;
+    ox = e.clientX; oy = e.clientY;
+    e.preventDefault();
+  }, true);
+  window.addEventListener('pointermove', e => {
+    if (!mode || !card) return;
+    const snap = 8;
+    if (mode === 'move') {
+      const nx = Math.max(0, Math.round((sx + e.clientX - ox) / snap) * snap);
+      const ny = Math.max(0, Math.round((sy + e.clientY - oy) / snap) * snap);
+      card.style.left = nx + 'px'; card.style.top = ny + 'px';
+    } else {
+      const cfg = DASH_CFG[sSel];
+      const nw = Math.max(cfg.minW, Math.round((sw + e.clientX - ox) / snap) * snap);
+      const nh = Math.max(cfg.minH, Math.round((sh + e.clientY - oy) / snap) * snap);
+      card.style.width = nw + 'px'; card.style.height = nh + 'px';
+    }
+  }, true);
+  const done = () => {
+    if (!mode || !card) return;
+    if (mode === 'resize') card.dispatchEvent(new CustomEvent('dash-resized'));
+    const st = (_DASHL[sSel] = _DASHL[sSel] || {});
+    st[sid] = {
+      x: parseFloat(card.style.left) || 0, y: parseFloat(card.style.top) || 0,
+      w: parseFloat(card.style.width) || 300, h: parseFloat(card.style.height) || 200,
+    };
+    dashPersist();
+    mode = null; card = null; box = null; _dragBox = null;
+  };
+  window.addEventListener('pointerup', done, true);
+  window.addEventListener('pointercancel', done, true);
+})();
+
+// ==================== 主循环 ====================
+async function tick() {
+  try {
+    await Promise.all([refreshOverview(), refreshTx(), refreshTraces(), refreshEv(), refreshMe()]);
+    try { dashNormalize(); } catch { }  // 布局引擎与数据刷新解耦,失败不影响页面
+    $('status').textContent = '● 已连接 · ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    $('status').textContent = '⚠ ' + e.message;
+  }
+}
+let _refreshTimer = null;
+function _applyRefreshRate() {
+  if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+  const sel = $('refresh-rate');
+  const ms = +sel.value || 0;
+  try { localStorage.setItem('llm.refresh.ms', String(ms)); } catch { }
+  if (ms > 0) _refreshTimer = setInterval(tick, ms);
+}
+(function initRefreshRate() {
+  let saved = 8000;
+  try { saved = +localStorage.getItem('llm.refresh.ms') || 8000; } catch { }
+  $('refresh-rate').value = saved > 0 ? String(saved) : '0';
+  $('refresh-rate').addEventListener('change', () => { _applyRefreshRate(); tick(); });
+  _applyRefreshRate();
+})();
+tick();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# 运行时依赖
+fastapi>=0.110
+uvicorn[standard]>=0.29
+psutil>=5.9
+
+# GPU 采集(按厂商可选,未安装则该 collector 自动跳过)
+pynvml>=11.5           ; sys_platform != "darwin"
+# pyrsmi              # 海光 DCU(可选)
+# cndev               # 寒武纪 MLU(可选,需驱动)

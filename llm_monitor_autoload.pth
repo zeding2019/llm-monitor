@@ -1,0 +1,1 @@
+import os; (os.environ.get('LLM_MONITOR_ENABLE')=='1' or os.path.exists('/tmp/llm-monitor.cfg')) and __import__('llm_monitor')
