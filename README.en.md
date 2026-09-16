@@ -119,11 +119,6 @@ ruff check .
 ruff format .
 ```
 
-## Roadmap
-
-- [x] Phase 1: scaffold + host sampling + minimal Web UI
-- [ ] Phase 2: vLLM patches (generate / step / scheduler) + NVIDIA GPU + Transaction tree UI
-- [ ] Phase 3: Prometheus exporter, Hygon / Cambricon / Kunlunxin collectors, slow-transaction sampling
 
 ## License
 

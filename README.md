@@ -102,12 +102,6 @@ src/llm_monitor/
 └── web/             FastAPI + 静态页
 ```
 
-## Roadmap
-
-- [x] Phase 1:骨架 + host 采样 + Web 最小版
-- [ ] Phase 2:vLLM patch(generate/step/scheduler) + NVIDIA GPU + Transaction 消息树 UI
-- [ ] Phase 3:Prometheus 出口、海光/寒武纪/昆仑芯 collector、慢事务采样保留
-
 ## License
 
 MIT
