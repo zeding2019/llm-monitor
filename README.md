@@ -1,23 +1,26 @@
 # llm-monitor
 
-轻量、零侵入的 LLM 推理引擎请求级监控（支持 vLLM 和 SGLang）。通过猴子补丁挂载,与推理引擎同进程部署,提供:
+A lightweight, zero-intrusion request-level monitor for LLM inference engines (vLLM and SGLang). Deployed in the same process as the inference engine via monkey-patching, with no changes required to engine source code.
 
-- **请求级端到端 Transaction**:含消息树、TTFT、e2e 耗时
-- **主机健康**:CPU / 内存 / 磁盘 / 网络带宽 / GPU 显存 & 利用率
-- **多厂商 GPU 适配**:NVIDIA(pynvml)、海光、寒武纪、昆仑芯(插件式,按需启用)
-- **四种指标模型**:Transaction / Event / Heartbeat / Metric
-- **Web 实时可视化** + **Prometheus 出口**
-- **内存 + SQLite** 两层存储,历史可查
+**Features:**
 
-## 设计原则
+- **Per-request Transactions** — full message tree with TTFT, e2e latency, prefill/decode breakdown
+- **Host health** — CPU, memory, disk, network bandwidth, GPU memory & utilization
+- **Multi-vendor GPU support** — NVIDIA (pynvml), Hygon, Cambricon, Kunlunxin (plugin-based, opt-in)
+- **Four metric types** — Transaction / Event / Heartbeat / Metric
+- **Real-time Web UI** + **Prometheus exporter**
+- **In-memory + SQLite** dual-layer storage with historical query support
+- **Startup phase profiling** — per-stage timing (weights load, NCCL init, KV cache, CUDA graph compile) across all GPU workers
 
-1. 零侵入:vLLM/SGLang 源码不动,`LLM_MONITOR_ENABLE=1` 或 `import llm_monitor` 触发
-2. 低开销:热路径只做 `perf_counter` + append,聚合/GPU 采样在后台线程
-3. 不抢主机资源:GPU 用 NVML(不占 CUDA context),Web 单线程 uvicorn 绑本地
+## Design Principles
 
-## 快速开始
+1. **Zero intrusion** — vLLM/SGLang source is untouched; set `LLM_MONITOR_ENABLE=1` or `import llm_monitor` to activate
+2. **Low overhead** — hot path does only `perf_counter` + ring-buffer append; aggregation and GPU sampling run in background threads
+3. **No resource contention** — GPU metrics via NVML (no CUDA context); Web server runs single-threaded uvicorn on localhost
 
-### 环境准备
+## Quick Start
+
+### Install
 
 ```bash
 python -m venv .venv
@@ -25,27 +28,28 @@ source .venv/bin/activate
 pip install -e ".[dev,nvidia]"
 ```
 
-### 使用方式一:vLLM OpenAI server
+### Option 1: vLLM OpenAI server
 
 ```bash
 export LLM_MONITOR_ENABLE=1
 export LLM_MONITOR_PORT=9109
-python -m vllm.entrypoints.openai.api_server --model xxx
-# 打开 http://127.0.0.1:9109
+python -m vllm.entrypoints.openai.api_server --model <model>
+# Open http://127.0.0.1:9109
 ```
 
-### 使用方式二:Python API
+### Option 2: Python API
 
 ```python
-import llm_monitor  # 自动 install
+import llm_monitor  # auto-installs on import
 from vllm import LLM
-llm = LLM(model="xxx")
+
+llm = LLM(model="<model>")
 llm.generate(["hello"])
 ```
 
-### 使用方式三:自定义 FastAPI(手动挂中间件)
+### Option 3: Custom FastAPI gateway
 
-若你自己包了一层 FastAPI 网关,想把 HTTP 请求也作为顶层 Transaction:
+If you wrap the engine behind your own FastAPI app and want HTTP requests as top-level Transactions:
 
 ```python
 import llm_monitor
@@ -56,31 +60,57 @@ app = FastAPI()
 app.add_middleware(LlmMonitorMiddleware)
 ```
 
-## 四种指标模型
+## Metric Types
 
-| 类型 | 用途 | 举例 |
+| Type | Purpose | Examples |
 |---|---|---|
-| Transaction | 有耗时段,可嵌套成树 | 一次 generate 请求、prefill、decode |
-| Event | 一次性事件计数 | OOM、请求取消、异常 |
-| Heartbeat | 周期采样值 | GPU 显存、CPU、带宽 |
-| Metric | 业务指标 count/sum/avg | tokens/s、prompt/gen tokens |
+| Transaction | Timed span, nestable into a tree | generate request, prefill, decode |
+| Event | One-shot occurrence | OOM, request cancellation, exception |
+| Heartbeat | Periodic sampled value | GPU memory, CPU usage, bandwidth |
+| Metric | Business counter / sum / avg | tokens/s, prompt tokens, generated tokens |
 
-## 配置(环境变量)
+## Configuration (Environment Variables)
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `LLM_MONITOR_ENABLE` | `0` | 主开关 |
-| `LLM_MONITOR_HOST` | `127.0.0.1` | Web 绑定 |
-| `LLM_MONITOR_PORT` | `9109` | Web 端口 |
-| `LLM_MONITOR_GPU` | `auto` | `auto` / `nvidia,hygon,...` |
-| `LLM_MONITOR_SAMPLE_INTERVAL_MS` | `1000` | Host 采样周期(CPU/内存/网络) |
-| `LLM_MONITOR_GPU_SAMPLE_INTERVAL_MS` | `5000` | GPU 采样周期(独立线程,不阻塞 host) |
-| `LLM_MONITOR_HYGON_TIMEOUT` | `15` | hy-smi/rocm-smi 命令超时(秒) |
-| `LLM_MONITOR_DB_PATH` | `./llm_monitor.db` | SQLite 路径,空则纯内存 |
-| `LLM_MONITOR_RETENTION_DAYS` | `7` | SQLite 保留天数 |
-| `LLM_MONITOR_TRANSACTION_BUF` | `10000` | 内存环形容量 |
+| `LLM_MONITOR_ENABLE` | `0` | Master switch |
+| `LLM_MONITOR_HOST` | `127.0.0.1` | Web server bind address |
+| `LLM_MONITOR_PORT` | `9109` | Web server port |
+| `LLM_MONITOR_GPU` | `auto` | `auto` or comma-separated backends: `nvidia,hygon,...` |
+| `LLM_MONITOR_SAMPLE_INTERVAL_MS` | `1000` | Host sampling interval (CPU / memory / network) |
+| `LLM_MONITOR_GPU_SAMPLE_INTERVAL_MS` | `5000` | GPU sampling interval (separate thread, non-blocking) |
+| `LLM_MONITOR_HYGON_TIMEOUT` | `15` | Timeout in seconds for hy-smi / rocm-smi commands |
+| `LLM_MONITOR_DB_PATH` | `./llm_monitor.db` | SQLite path; leave empty for in-memory only |
+| `LLM_MONITOR_RETENTION_DAYS` | `7` | SQLite retention window in days |
+| `LLM_MONITOR_TRANSACTION_BUF` | `10000` | In-memory ring buffer capacity |
 
-## 开发
+## How It Works
+
+llm-monitor uses a **post-import hook** pattern to patch engine classes without touching their source:
+
+1. A `.pth` file in site-packages runs one line on every Python process startup — guarded by `LLM_MONITOR_ENABLE=1` or the presence of `/tmp/llm-monitor.cfg`.
+2. On activation, `builtins.__import__` is replaced with a hooked version that fires registered callbacks whenever a target module first appears in `sys.modules`.
+3. Callbacks call `wrap_method` to replace class methods with instrumented versions that record timing and emit Transactions / Heartbeats.
+4. Worker subprocesses (spawned by vLLM's `MultiprocessingExecutor` or SGLang's scheduler) pick up the marker file at `/tmp/llm-monitor.cfg` and install patches independently, each writing their own per-rank startup timings to the shared SQLite database.
+
+## Project Structure
+
+```
+src/llm_monitor/
+├── bootstrap.py     install() / uninstall(), singleton lock
+├── config.py        env vars and defaults
+├── core/            engine-agnostic core (models, context, ring buffer, api, aggregator)
+├── sampler/         background samplers (host + gpu/*)
+├── patch/           monkey-patches for vLLM and SGLang
+│   ├── registry.py      post-import hook infrastructure
+│   ├── vllm_startup.py  startup phase timing (declarative _SPECS table)
+│   ├── sglang.py        SGLang patches (startup + runtime)
+│   └── util.py          wrap_method, unwrap_method
+├── store/           in-memory ring buffer + SQLite writer
+└── web/             FastAPI + static dashboard
+```
+
+## Development
 
 ```bash
 pip install -e ".[dev]"
@@ -89,18 +119,6 @@ ruff check .
 ruff format .
 ```
 
-## 项目结构
-
-```
-src/llm_monitor/
-├── bootstrap.py     install() / uninstall()
-├── config.py        环境变量与默认值
-├── core/            与厂商无关的内核(models/context/ringbuf/api/aggregator)
-├── sampler/         后台采样(host + gpu/*)
-├── patch/           vLLM 和 SGLang 猴子补丁
-├── store/           memory + sqlite
-└── web/             FastAPI + 静态页
-```
 
 ## License
 
